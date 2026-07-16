@@ -1,6 +1,22 @@
 (() => {
   "use strict";
 
+  // Small visual corrections applied after the main stylesheet.
+  // Keeping them here allows rapid mobile QA fixes without invalidating the design system.
+  const visualPatch = document.createElement("style");
+  visualPatch.textContent = `
+    .language-switcher button.active { background: #fff; color: var(--deep); }
+    .site-header.scrolled .language-switcher button.active { background: var(--deep); color: #fff; }
+    @media (max-width: 560px) {
+      .scroll-cue { display: none; }
+      .hero-stats { row-gap: 18px; }
+      .hero-stats div { min-width: 50%; padding-inline: 14px; }
+      .hero-stats div:nth-child(odd) { padding-left: 0; border-left: 0; }
+      .hero-stats div:nth-child(even) { border-left: 1px solid rgba(255,255,255,.34); }
+    }
+  `;
+  document.head.append(visualPatch);
+
   const translations = window.VILLA_TRANSLATIONS || {};
   const config = window.VILLA_CONFIG || {};
   const root = document.documentElement;
