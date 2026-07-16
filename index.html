@@ -30,5 +30,4 @@ function setLang(l){document.documentElement.lang=l;document.querySelectorAll('[
 document.querySelectorAll('[data-lang]').forEach(b=>b.onclick=()=>setLang(b.dataset.lang));setLang(localStorage.getItem('villa-lang')||'fr');
 document.querySelectorAll('[data-photo]').forEach(img=>{const src=window.VILLA_IMAGES&&window.VILLA_IMAGES[img.dataset.photo];if(src)img.src=src});
 </script>
-</body>
-</html>
+</body><!-- déclenchement manuel du déploiement --></html>
