@@ -1,0 +1,10 @@
+{
+  "name": "Villa ALMALE — Nuevo Portil",
+  "short_name": "Villa ALMALE",
+  "description": "Villa familiale avec piscine privée à Nuevo Portil.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f1e8",
+  "theme_color": "#143b40",
+  "icons": [{"src":"assets/favicon.svg","sizes":"any","type":"image/svg+xml"}]
+}
