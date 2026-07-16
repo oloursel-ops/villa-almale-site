@@ -1,0 +1,109 @@
+{
+  "project": "Villa ALMALE",
+  "updated": "2026-07-16",
+  "policy": {
+    "final": "Approved for publication",
+    "provisional": "May be used until the new photo shoot replaces it",
+    "guide_only": "House guide only; never use in marketing",
+    "excluded": "Do not publish"
+  },
+  "photos": [
+    {
+      "id": "P01",
+      "slug": "villa-pool-garden-hero",
+      "status": "provisional",
+      "priority": 1,
+      "uses": ["website-cover", "ownerrez-cover", "airbnb-cover", "vrbo-cover"],
+      "tags": ["villa", "pool", "garden", "exterior", "hero", "family"],
+      "retake": "Photograph pool and house together in landscape format; remove hoses and visual clutter."
+    },
+    {
+      "id": "P02",
+      "slug": "villa-exterior-facade",
+      "status": "provisional",
+      "priority": 2,
+      "uses": ["website-gallery", "ownerrez-gallery", "airbnb-gallery", "vrbo-gallery"],
+      "tags": ["villa", "facade", "garden", "exterior"],
+      "retake": "Straight verticals, open shutters, tidy lawn and warm late-afternoon light."
+    },
+    {
+      "id": "P03",
+      "slug": "villa-outdoor-living",
+      "status": "provisional",
+      "priority": 3,
+      "uses": ["website-gallery", "ownerrez-gallery", "airbnb-gallery", "vrbo-gallery"],
+      "tags": ["terrace", "outdoor-dining", "garden", "barbecue", "family"],
+      "retake": "Set the table, use warm lighting and remove personal objects."
+    },
+    {
+      "id": "P04",
+      "slug": "villa-primary-bedroom",
+      "status": "provisional",
+      "priority": 5,
+      "uses": ["website-rooms", "ownerrez-gallery", "airbnb-gallery", "vrbo-gallery"],
+      "tags": ["bedroom", "double-bed", "primary-suite", "interior"],
+      "retake": "Landscape view from two corners, curtains open, bedside lamps on."
+    },
+    {
+      "id": "P05",
+      "slug": "villa-double-bedroom",
+      "status": "provisional",
+      "priority": 6,
+      "uses": ["website-rooms", "ownerrez-gallery", "airbnb-gallery", "vrbo-gallery"],
+      "tags": ["bedroom", "double-bed", "interior"],
+      "retake": "Make the bed symmetrically and photograph from doorway and opposite corner."
+    },
+    {
+      "id": "P06",
+      "slug": "villa-twin-bedroom",
+      "status": "provisional",
+      "priority": 7,
+      "uses": ["website-rooms", "ownerrez-gallery", "airbnb-gallery", "vrbo-gallery"],
+      "tags": ["bedroom", "twin-beds", "children", "interior"],
+      "retake": "Show both beds clearly without using ultra-wide angle."
+    },
+    {
+      "id": "P07",
+      "slug": "destination-ria-beach",
+      "status": "final",
+      "priority": 20,
+      "uses": ["website-destination", "ownerrez-gallery-end", "airbnb-gallery-end", "vrbo-gallery-end"],
+      "tags": ["beach", "ria", "sand", "pine-forest", "destination"]
+    },
+    {
+      "id": "P08",
+      "slug": "destination-el-rompido-marina",
+      "status": "final",
+      "priority": 21,
+      "uses": ["website-destination", "ownerrez-gallery-end", "airbnb-gallery-end", "vrbo-gallery-end"],
+      "tags": ["el-rompido", "marina", "restaurants", "terrace", "destination"]
+    },
+    {
+      "id": "P09",
+      "slug": "practical-supermarket-el-jamon",
+      "status": "guide_only",
+      "priority": 90,
+      "uses": ["future-house-guide"],
+      "tags": ["supermarket", "shopping", "practical-information"],
+      "note": "Never publish in the listing or the commercial website."
+    },
+    {
+      "id": "P10",
+      "slug": "kitchen-under-stairs-before",
+      "status": "excluded",
+      "priority": 99,
+      "uses": ["private-renovation-record"],
+      "tags": ["kitchen", "worksite", "before", "private"],
+      "note": "Do not publish until the work is complete and a new photograph is taken."
+    },
+    {
+      "id": "P11",
+      "slug": "kitchen-under-stairs-render",
+      "status": "excluded",
+      "priority": 99,
+      "uses": ["private-design-reference"],
+      "tags": ["kitchen", "render", "design-reference", "private"],
+      "note": "Never present this rendering as a real photograph."
+    }
+  ]
+}
