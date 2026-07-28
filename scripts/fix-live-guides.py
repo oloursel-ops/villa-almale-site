@@ -49,28 +49,31 @@ for lang, d in DATA.items():
     path = ROOT / lang / "index.html"
     text = path.read_text(encoding="utf-8")
 
-    text = sub_one(
-        text,
-        r'(<section id="confort">\s*<h2>.*?</h2>\s*)<p class="section-intro"><span>.*?</span></p>',
-        r'\1<p class="section-intro"><span>' + d["intro"] + r'</span></p>',
-        f"{lang} comfort introduction",
-    )
+    if d["intro"] not in text:
+        text = sub_one(
+            text,
+            r'(<section id="confort">\s*<h2>.*?</h2>\s*)<p class="section-intro"><span>.*?</span></p>',
+            r'\1<p class="section-intro"><span>' + d["intro"] + r'</span></p>',
+            f"{lang} comfort introduction",
+        )
 
-    ac_pattern = (
-        r'<article class="card half"><div class="tag"><span>' + re.escape(d["ac_tag"]) +
-        r'</span></div>.*?</article>'
-        r'(?:<article class="card half"><div class="tag"><span>' + re.escape(d["fan_tag"]) +
-        r'</span></div>.*?</article>)?'
-    )
-    text = sub_one(text, ac_pattern, d["cards"], f"{lang} air-conditioning cards")
+    if d["cards"] not in text:
+        ac_pattern = (
+            r'<article class="card half"><div class="tag"><span>' + re.escape(d["ac_tag"]) +
+            r'</span></div>.*?</article>'
+            r'(?:<article class="card half"><div class="tag"><span>' + re.escape(d["fan_tag"]) +
+            r'</span></div>.*?</article>)?'
+        )
+        text = sub_one(text, ac_pattern, d["cards"], f"{lang} air-conditioning cards")
 
-    oven_pattern = (
-        r'<article class="card half">\s*<div class="pad">\s*'
-        r'<div class="tag"><span>' + re.escape(d["cooking"]) + r'</span></div>\s*'
-        r'<h3><span>.*?(?:maintenance|mantenimiento).*?</span></h3>\s*'
-        r'<div[^>]*class="maintenance"[^>]*>.*?</div>\s*<ul>.*?</ul>\s*</div>\s*</article>'
-    )
-    text = sub_one(text, oven_pattern, d["oven"], f"{lang} oven card")
+    if d["oven"] not in text:
+        oven_pattern = (
+            r'<article class="card half">\s*<div class="pad">\s*'
+            r'<div class="tag"><span>' + re.escape(d["cooking"]) + r'</span></div>\s*'
+            r'<h3><span>.*?(?:maintenance|mantenimiento).*?</span></h3>\s*'
+            r'<div[^>]*class="maintenance"[^>]*>.*?</div>\s*<ul>.*?</ul>\s*</div>\s*</article>'
+        )
+        text = sub_one(text, oven_pattern, d["oven"], f"{lang} oven card")
 
     if 'id="guest-safety-information"' not in text:
         if "</main>" not in text:
