@@ -1,9 +1,16 @@
-name: Deploy Villa Almale to Infomaniak
+name: Test and deploy Villa Almale to Infomaniak
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      operation:
+        description: "Choose a safe connection test or a real upload"
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - deploy
 
 concurrency:
   group: villa-almale-production
@@ -13,8 +20,8 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
-    name: Publish production site
+  transfer:
+    name: ${{ inputs.operation == 'deploy' && 'Publish production site' || 'Test Infomaniak connection' }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -32,8 +39,9 @@ jobs:
       - name: Install transfer client
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Deploy to Infomaniak
+      - name: Test connection or deploy
         env:
+          OPERATION: ${{ inputs.operation }}
           DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
           DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
           DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
@@ -67,22 +75,42 @@ jobs:
               ;;
           esac
 
-          lftp -c "
-            set cmd:fail-exit yes;
-            set net:max-retries 2;
-            set net:timeout 20;
-            $EXTRA_SETTINGS
-            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-            mirror --reverse --delete --verbose \
-              --exclude-glob .git/ \
-              --exclude-glob .github/ \
-              --exclude-glob DEPLOYMENT.md \
-              ./ \"$DEPLOY_PATH\";
-            bye
-          "
+          if [ "$OPERATION" = "test" ]; then
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 20;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              cd \"$DEPLOY_PATH\";
+              cls -la;
+              bye
+            "
+            echo "Connection test succeeded. No file was changed."
+          else
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 20;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              mirror --reverse --verbose \
+                --exclude-glob .git/ \
+                --exclude-glob .github/ \
+                --exclude-glob DEPLOYMENT.md \
+                ./ \"$DEPLOY_PATH\";
+              bye
+            "
+            echo "Upload succeeded. Existing remote-only files were not deleted."
+          fi
 
-      - name: Deployment summary
+      - name: Operation summary
         run: |
-          echo "### Villa Almale published" >> "$GITHUB_STEP_SUMMARY"
-          echo "Commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "A new upload by ZIP is no longer required." >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.operation }}" = "test" ]; then
+            echo "### Infomaniak connection verified" >> "$GITHUB_STEP_SUMMARY"
+            echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Villa Almale uploaded" >> "$GITHUB_STEP_SUMMARY"
+            echo "Commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Remote-only files were preserved during this first safe phase." >> "$GITHUB_STEP_SUMMARY"
+          fi
