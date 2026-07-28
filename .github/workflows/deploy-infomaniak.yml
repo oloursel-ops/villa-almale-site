@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "Choose connection test, remote backup, or safe upload"
+        description: "Choose connection test, backup, targeted content update, or safe upload"
         required: true
         default: test
         type: choice
         options:
           - test
           - backup
+          - content-update
           - deploy
 
 concurrency:
@@ -22,7 +23,7 @@ permissions:
 
 jobs:
   transfer:
-    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Inspect Infomaniak site directories' }}
+    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'content-update' && 'Update summer comfort and guest guide' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Inspect Infomaniak site directories' }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -36,11 +37,12 @@ jobs:
           set -euo pipefail
           test -f index.html
           grep -qi "Villa Almale" index.html
+          test -f scripts/update-summer-comfort.py
 
       - name: Install transfer client
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Test connection, back up, or deploy
+      - name: Test connection, back up, update, or deploy
         env:
           OPERATION: ${{ inputs.operation }}
           DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
@@ -95,58 +97,110 @@ jobs:
               bye
             "
             echo "Infomaniak site directory inspection succeeded. No file was changed."
-          else
-            : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
-
-            if [ "$DEPLOY_PATH" != "sites/PageWebbasique1" ]; then
-              echo "Unsafe INFOMANIAK_PATH. Expected exactly: sites/PageWebbasique1"
-              exit 1
-            fi
-
-            if [ "$OPERATION" = "backup" ]; then
-              mkdir -p remote-backup
-              lftp -c "
-                set cmd:fail-exit yes;
-                set net:max-retries 2;
-                set net:timeout 30;
-                $EXTRA_SETTINGS
-                open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-                mirror --verbose \
-                  --exclude-glob ._DEPLOY*/ \
-                  --exclude-glob .git/ \
-                  \"$DEPLOY_PATH\" ./remote-backup;
-                bye
-              "
-              test -n "$(find remote-backup -mindepth 1 -print -quit)"
-              echo "Remote backup downloaded. No production file was changed."
-            else
-              lftp -c "
-                set cmd:fail-exit yes;
-                set net:max-retries 2;
-                set net:timeout 20;
-                $EXTRA_SETTINGS
-                open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-                mirror --reverse --verbose \
-                  --exclude-glob .git/ \
-                  --exclude-glob .github/ \
-                  --exclude-glob DEPLOYMENT.md \
-                  ./ \"$DEPLOY_PATH\";
-                bye
-              "
-              echo "Upload succeeded. Existing remote-only files were not deleted."
-            fi
+            exit 0
           fi
 
-      - name: Package remote backup
+          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
+          if [ "$DEPLOY_PATH" != "sites/PageWebbasique1" ]; then
+            echo "Unsafe INFOMANIAK_PATH. Expected exactly: sites/PageWebbasique1"
+            exit 1
+          fi
+
+          if [ "$OPERATION" = "backup" ]; then
+            mkdir -p remote-backup
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              mirror --verbose \
+                --exclude-glob ._DEPLOY*/ \
+                --exclude-glob .git/ \
+                \"$DEPLOY_PATH\" ./remote-backup;
+              bye
+            "
+            test -n "$(find remote-backup -mindepth 1 -print -quit)"
+            echo "Remote backup downloaded. No production file was changed."
+            exit 0
+          fi
+
+          if [ "$OPERATION" = "content-update" ]; then
+            mkdir -p production-content/en production-content/es
+            mkdir -p production-content/guide/fr production-content/guide/en production-content/guide/es
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              get \"$DEPLOY_PATH/index.html\" -o production-content/index.html;
+              get \"$DEPLOY_PATH/en/index.html\" -o production-content/en/index.html;
+              get \"$DEPLOY_PATH/es/index.html\" -o production-content/es/index.html;
+              get \"$DEPLOY_PATH/guide/fr/index.html\" -o production-content/guide/fr/index.html;
+              get \"$DEPLOY_PATH/guide/en/index.html\" -o production-content/guide/en/index.html;
+              get \"$DEPLOY_PATH/guide/es/index.html\" -o production-content/guide/es/index.html;
+              bye
+            "
+            cp -a production-content pre-update-backup
+            python3 scripts/update-summer-comfort.py production-content
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              put production-content/index.html -o \"$DEPLOY_PATH/index.html\";
+              put production-content/en/index.html -o \"$DEPLOY_PATH/en/index.html\";
+              put production-content/es/index.html -o \"$DEPLOY_PATH/es/index.html\";
+              put production-content/guide/fr/index.html -o \"$DEPLOY_PATH/guide/fr/index.html\";
+              put production-content/guide/en/index.html -o \"$DEPLOY_PATH/guide/en/index.html\";
+              put production-content/guide/es/index.html -o \"$DEPLOY_PATH/guide/es/index.html\";
+              bye
+            "
+            echo "Targeted production content update completed."
+            exit 0
+          fi
+
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 20;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            mirror --reverse --verbose \
+              --exclude-glob .git/ \
+              --exclude-glob .github/ \
+              --exclude-glob scripts/ \
+              --exclude-glob DEPLOYMENT.md \
+              ./ \"$DEPLOY_PATH\";
+            bye
+          "
+          echo "Upload succeeded. Existing remote-only files were not deleted."
+
+      - name: Package full remote backup
         if: ${{ inputs.operation == 'backup' }}
         run: tar -czf villa-almale-infomaniak-backup-${{ github.run_id }}.tar.gz -C remote-backup .
 
-      - name: Upload remote backup artifact
+      - name: Upload full remote backup artifact
         if: ${{ inputs.operation == 'backup' }}
         uses: actions/upload-artifact@v4
         with:
           name: villa-almale-infomaniak-backup-${{ github.run_id }}
           path: villa-almale-infomaniak-backup-${{ github.run_id }}.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Package pre-update files
+        if: ${{ inputs.operation == 'content-update' }}
+        run: tar -czf villa-almale-before-content-update-${{ github.run_id }}.tar.gz -C pre-update-backup .
+
+      - name: Upload pre-update backup artifact
+        if: ${{ inputs.operation == 'content-update' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-before-content-update-${{ github.run_id }}
+          path: villa-almale-before-content-update-${{ github.run_id }}.tar.gz
           retention-days: 30
           if-no-files-found: error
 
@@ -159,6 +213,10 @@ jobs:
             echo "### Infomaniak production backup created" >> "$GITHUB_STEP_SUMMARY"
             echo "The downloadable archive is stored as a workflow artifact for 30 days." >> "$GITHUB_STEP_SUMMARY"
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ inputs.operation }}" = "content-update" ]; then
+            echo "### Summer comfort and guest guide updated" >> "$GITHUB_STEP_SUMMARY"
+            echo "Updated: three mobile air-conditioning units, two ceiling fans, usage precautions, first-aid kit location and Hoja de Reclamaciones." >> "$GITHUB_STEP_SUMMARY"
+            echo "The six original files are stored as a workflow artifact for 30 days." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Villa Almale uploaded" >> "$GITHUB_STEP_SUMMARY"
             echo "Commit: `${GITHUB_SHA}`" >> "$GITHUB_STEP_SUMMARY"
