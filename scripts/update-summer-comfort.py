@@ -23,6 +23,14 @@ def sub_required(text: str, pattern: str, replacement: str, label: str, flags: i
     return updated
 
 
+def insert_before_main_end(text: str, block: str, marker: str) -> str:
+    if marker in text:
+        return text
+    if "</main>" not in text:
+        raise RuntimeError("Guide closing </main> marker not found")
+    return text.replace("</main>", block + "\n</main>", 1)
+
+
 def add_amenities(text: str) -> str:
     if "Three mobile air-conditioning units in selected rooms" in text:
         return text
@@ -85,54 +93,16 @@ for lang, title, body, faq in [
     write(path, t)
 
 
-GUIDE_DATA = {
-    "fr": {
-        "intro_pattern": r'<p class="section-intro"><span>La maison n’est pas .*?moustiquaires\.</span></p>',
-        "intro": '<p class="section-intro"><span>La maison n’est pas entièrement climatisée. Trois climatiseurs mobiles et deux ventilateurs de plafond améliorent le confort des pièces équipées, en complément de l’aération aux bonnes heures, de l’ombre et des moustiquaires.</span></p>',
-        "card_pattern": r'<article class="card half"><div class="tag"><span>Chambres</span></div><h3><span>Moustiquaires et climatisation mobile</span></h3>.*?</article>',
-        "card": '<article class="card half"><div class="tag"><span>Pièces équipées</span></div><h3><span>Trois climatiseurs mobiles et deux ventilateurs de plafond</span></h3><p>Un climatiseur mobile de 7 000 BTU est installé dans la suite principale. Deux appareils de 9 000 BTU équipent le salon et l’espace nuit du rez-de-chaussée. Les deux chambres à lits simples disposent de ventilateurs de plafond.</p><p class="tip"><span>Fermez portes et fenêtres pendant le fonctionnement. Éteignez les appareils dès que vous quittez la pièce ou la maison ; ils ne doivent jamais fonctionner en l’absence des occupants.</span></p></article>',
-        "assist": '<div class="key"><b>💬 Assistance pendant le séjour</b><p>Pour toute question concernant la maison, utilisez la messagerie de votre réservation. Les numéros directs sont communiqués uniquement aux voyageurs enregistrés.</p></div>',
-        "complaint": '<div class="key"><b>📄 Hoja de Reclamaciones</b><p>La feuille officielle de réclamation de la Junta de Andalucía est disponible dans le logement. Contactez-nous si vous souhaitez l’utiliser.</p></div>',
-        "incident": '<article class="card half"><div class="tag"><span>Incident</span></div><h3><span>Prévenir, ne pas réparer</span></h3><p>Signalez rapidement toute casse, fuite, panne, accident ou objet manquant. Une information précoce permet souvent une solution simple et limite les dommages.</p></article>',
-        "aid": '<article class="card half"><div class="tag"><span>Premiers soins</span></div><h3><span>Trousse à pharmacie</span></h3><p>Une trousse de premiers soins est disponible dans le WC du rez-de-chaussée. En cas d’urgence médicale, appelez le <strong>112</strong>.</p></article>',
-    },
-    "en": {
-        "intro_pattern": r'<p class="section-intro"><span>The house does not have .*?mosquito screens\.</span></p>',
-        "intro": '<p class="section-intro"><span>The house is not fully air-conditioned. Three mobile air-conditioning units and two ceiling fans improve comfort in the equipped rooms, together with ventilation at the right times, shade and mosquito screens.</span></p>',
-        "card_pattern": r'<article class="card half"><div class="tag"><span>Bedrooms</span></div><h3><span>Mosquito screens and mobile air conditioning</span></h3>.*?</article>',
-        "card": '<article class="card half"><div class="tag"><span>Equipped rooms</span></div><h3><span>Three mobile air-conditioning units and two ceiling fans</span></h3><p>A 7,000 BTU mobile unit is installed in the main suite. Two 9,000 BTU units serve the living room and the ground-floor sleeping area. Both twin bedrooms have ceiling fans.</p><p class="tip"><span>Keep doors and windows closed while a unit is running. Switch it off whenever you leave the room or the house; never leave these appliances running while the property is unoccupied.</span></p></article>',
-        "assist": '<div class="key"><b>💬 Assistance during your stay</b><p>For any question about the house, use your booking message thread. Direct telephone numbers are shared only with registered guests.</p></div>',
-        "complaint": '<div class="key"><b>📄 Official complaints form</b><p>The official Junta de Andalucía Hoja de Reclamaciones is available in the property. Contact us if you wish to use it.</p></div>',
-        "incident": '<article class="card half"><div class="tag"><span>Incident</span></div><h3><span>Report it, do not repair it</span></h3><p>Promptly report any breakage, leak, fault, accident or missing item. Early notice often allows a simple solution and limits damage.</p></article>',
-        "aid": '<article class="card half"><div class="tag"><span>First aid</span></div><h3><span>First-aid kit</span></h3><p>A first-aid kit is kept in the ground-floor WC. In a medical emergency, call <strong>112</strong>.</p></article>',
-    },
-    "es": {
-        "intro_pattern": r'<p class="section-intro"><span>La casa no dispone de .*?mosquiteras\.</span></p>',
-        "intro": '<p class="section-intro"><span>La casa no está climatizada por completo. Tres aparatos portátiles y dos ventiladores de techo mejoran el confort de las estancias equipadas, junto con la ventilación a las horas adecuadas, la sombra y las mosquiteras.</span></p>',
-        "card_pattern": r'<article class="card half"><div class="tag"><span>Dormitorios</span></div><h3><span>Mosquiteras y aire acondicionado portátil</span></h3>.*?</article>',
-        "card": '<article class="card half"><div class="tag"><span>Estancias equipadas</span></div><h3><span>Tres aparatos portátiles y dos ventiladores de techo</span></h3><p>La suite principal dispone de un aparato portátil de 7.000 BTU. Otros dos aparatos de 9.000 BTU equipan el salón y la zona de descanso de la planta baja. Los dos dormitorios con camas individuales tienen ventiladores de techo.</p><p class="tip"><span>Mantén puertas y ventanas cerradas mientras funciona cada aparato. Apágalo al salir de la estancia o de la casa; nunca dejes estos equipos funcionando cuando no haya nadie en la vivienda.</span></p></article>',
-        "assist": '<div class="key"><b>💬 Asistencia durante la estancia</b><p>Para cualquier consulta sobre la casa, utiliza la mensajería de tu reserva. Los teléfonos directos se facilitan únicamente a los huéspedes registrados.</p></div>',
-        "complaint": '<div class="key"><b>📄 Hoja de Reclamaciones</b><p>La Hoja de Reclamaciones oficial de la Junta de Andalucía está disponible en el alojamiento. Contacta con nosotros si deseas utilizarla.</p></div>',
-        "incident": '<article class="card half"><div class="tag"><span>Incidencia</span></div><h3><span>Avisar, no reparar</span></h3><p>Comunica rápidamente cualquier rotura, fuga, avería, accidente u objeto que falte. Avisar pronto suele permitir una solución sencilla y limita los daños.</p></article>',
-        "aid": '<article class="card half"><div class="tag"><span>Primeros auxilios</span></div><h3><span>Botiquín</span></h3><p>Hay un botiquín de primeros auxilios en el aseo de la planta baja. En caso de urgencia médica, llama al <strong>112</strong>.</p></article>',
-    },
+GUIDE_BLOCKS = {
+    "fr": '''<section class="section" id="summer-comfort-update"><div class="container"><div class="section-head"><span class="eyebrow">Confort et sécurité</span><h2>Équipements d’été et informations utiles</h2></div><div class="cards"><article class="card half"><div class="tag"><span>Pièces équipées</span></div><h3><span>Trois climatiseurs mobiles et deux ventilateurs de plafond</span></h3><p>Un climatiseur mobile de 7 000 BTU est installé dans la suite principale. Deux appareils de 9 000 BTU équipent le salon et l’espace nuit du rez-de-chaussée. Les deux chambres à lits simples disposent de ventilateurs de plafond.</p><p class="tip"><span>Fermez portes et fenêtres pendant le fonctionnement. Éteignez les appareils dès que vous quittez la pièce ou la maison ; ils ne doivent jamais fonctionner en l’absence des occupants.</span></p></article><article class="card half"><div class="tag"><span>Premiers soins</span></div><h3><span>Trousse à pharmacie</span></h3><p>Une trousse de premiers soins est disponible dans le WC du rez-de-chaussée. En cas d’urgence médicale, appelez le <strong>112</strong>.</p></article></div><div class="key"><b>📄 Hoja de Reclamaciones</b><p>La feuille officielle de réclamation de la Junta de Andalucía est disponible dans le logement. Contactez-nous si vous souhaitez l’utiliser.</p></div></div></section>''',
+    "en": '''<section class="section" id="summer-comfort-update"><div class="container"><div class="section-head"><span class="eyebrow">Comfort and safety</span><h2>Summer equipment and useful information</h2></div><div class="cards"><article class="card half"><div class="tag"><span>Equipped rooms</span></div><h3><span>Three mobile air-conditioning units and two ceiling fans</span></h3><p>A 7,000 BTU mobile unit is installed in the main suite. Two 9,000 BTU units serve the living room and the ground-floor sleeping area. Both twin bedrooms have ceiling fans.</p><p class="tip"><span>Keep doors and windows closed while a unit is running. Switch it off whenever you leave the room or the house; never leave these appliances running while the property is unoccupied.</span></p></article><article class="card half"><div class="tag"><span>First aid</span></div><h3><span>First-aid kit</span></h3><p>A first-aid kit is kept in the ground-floor WC. In a medical emergency, call <strong>112</strong>.</p></article></div><div class="key"><b>📄 Official complaints form</b><p>The official Junta de Andalucía Hoja de Reclamaciones is available in the property. Contact us if you wish to use it.</p></div></div></section>''',
+    "es": '''<section class="section" id="summer-comfort-update"><div class="container"><div class="section-head"><span class="eyebrow">Confort y seguridad</span><h2>Equipamiento de verano e información útil</h2></div><div class="cards"><article class="card half"><div class="tag"><span>Estancias equipadas</span></div><h3><span>Tres aparatos portátiles y dos ventiladores de techo</span></h3><p>La suite principal dispone de un aparato portátil de 7.000 BTU. Otros dos aparatos de 9.000 BTU equipan el salón y la zona de descanso de la planta baja. Los dos dormitorios con camas individuales tienen ventiladores de techo.</p><p class="tip"><span>Mantén puertas y ventanas cerradas mientras funciona cada aparato. Apágalo al salir de la estancia o de la casa; nunca dejes estos equipos funcionando cuando no haya nadie en la vivienda.</span></p></article><article class="card half"><div class="tag"><span>Primeros auxilios</span></div><h3><span>Botiquín</span></h3><p>Hay un botiquín de primeros auxilios en el aseo de la planta baja. En caso de urgencia médica, llama al <strong>112</strong>.</p></article></div><div class="key"><b>📄 Hoja de Reclamaciones</b><p>La Hoja de Reclamaciones oficial de la Junta de Andalucía está disponible en el alojamiento. Contacta con nosotros si deseas utilizarla.</p></div></div></section>''',
 }
 
-for lang, d in GUIDE_DATA.items():
+for lang, block in GUIDE_BLOCKS.items():
     path = ROOT / "guide" / lang / "index.html"
     t = read(path)
-    if d["intro"] not in t:
-        t = sub_required(t, d["intro_pattern"], d["intro"], f"{lang} guide summer intro")
-    if d["card"] not in t:
-        t = sub_required(t, d["card_pattern"], d["card"], f"{lang} guide comfort card")
-    if d["complaint"] not in t:
-        if d["assist"] not in t:
-            raise RuntimeError(f"{lang} guide assistance marker not found")
-        t = t.replace(d["assist"], d["assist"] + d["complaint"], 1)
-    if d["aid"] not in t:
-        if d["incident"] not in t:
-            raise RuntimeError(f"{lang} guide incident marker not found")
-        t = t.replace(d["incident"], d["incident"] + d["aid"], 1)
+    t = insert_before_main_end(t, block, 'id="summer-comfort-update"')
     write(path, t)
 
 print("Summer comfort, first-aid and complaints information updated successfully.")
