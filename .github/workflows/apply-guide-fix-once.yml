@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   apply:
@@ -120,6 +120,23 @@ jobs:
           name: villa-almale-guides-before-fix-${{ github.run_id }}
           path: live-guides-before-fix/
           retention-days: 30
+
+      - name: Record successful deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p deployment-status
+          cat > deployment-status/guide-fix-success.txt <<EOF
+          Guide correction completed successfully.
+          Run ID: $GITHUB_RUN_ID
+          Commit: $GITHUB_SHA
+          French, English and Spanish remote files were verified byte for byte.
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deployment-status/guide-fix-success.txt
+          git commit -m "Record successful live guide correction"
+          git push
 
       - name: Summary
         run: |
