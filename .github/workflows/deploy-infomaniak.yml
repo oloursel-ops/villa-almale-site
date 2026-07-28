@@ -86,11 +86,11 @@ jobs:
               pwd;
               echo '=== ROOT CONTENTS ===';
               cls -la;
-              echo '=== /sites CONTENTS ===';
-              cd /sites;
+              echo '=== sites CONTENTS ===';
+              cd sites;
               pwd;
               cls -la;
-              echo '=== /sites DIRECTORIES ===';
+              echo '=== sites DIRECTORIES ===';
               find -d 2;
               bye
             "
@@ -154,7 +154,7 @@ jobs:
         run: |
           if [ "${{ inputs.operation }}" = "test" ]; then
             echo "### Infomaniak site directories inspected" >> "$GITHUB_STEP_SUMMARY"
-            echo "Review the job log for the exact directory name under /sites." >> "$GITHUB_STEP_SUMMARY"
+            echo "Review the job log for the exact directory name under sites." >> "$GITHUB_STEP_SUMMARY"
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ inputs.operation }}" = "backup" ]; then
             echo "### Infomaniak production backup created" >> "$GITHUB_STEP_SUMMARY"
@@ -162,6 +162,6 @@ jobs:
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Villa Almale uploaded" >> "$GITHUB_STEP_SUMMARY"
-            echo "Commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "Commit: `${GITHUB_SHA}`" >> "$GITHUB_STEP_SUMMARY"
             echo "Remote-only files were preserved during this first safe phase." >> "$GITHUB_STEP_SUMMARY"
           fi
