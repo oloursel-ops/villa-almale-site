@@ -1,4 +1,5 @@
 name: Apply Villa Almale guide corrections once
+run-name: Apply live guide corrections
 
 on:
   push:
