@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   transfer:
-    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Inspect Infomaniak SFTP root' }}
+    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Inspect Infomaniak site directories' }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -86,11 +86,15 @@ jobs:
               pwd;
               echo '=== ROOT CONTENTS ===';
               cls -la;
-              echo '=== FIRST-LEVEL DIRECTORIES ===';
+              echo '=== /sites CONTENTS ===';
+              cd /sites;
+              pwd;
+              cls -la;
+              echo '=== /sites DIRECTORIES ===';
               find -d 2;
               bye
             "
-            echo "SFTP root inspection succeeded. No file was changed."
+            echo "Infomaniak site directory inspection succeeded. No file was changed."
           else
             : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
 
@@ -149,8 +153,8 @@ jobs:
       - name: Operation summary
         run: |
           if [ "${{ inputs.operation }}" = "test" ]; then
-            echo "### Infomaniak SFTP root inspected" >> "$GITHUB_STEP_SUMMARY"
-            echo "Review the job log to identify the site path visible to this user." >> "$GITHUB_STEP_SUMMARY"
+            echo "### Infomaniak site directories inspected" >> "$GITHUB_STEP_SUMMARY"
+            echo "Review the job log for the exact directory name under /sites." >> "$GITHUB_STEP_SUMMARY"
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ inputs.operation }}" = "backup" ]; then
             echo "### Infomaniak production backup created" >> "$GITHUB_STEP_SUMMARY"
