@@ -1,0 +1,127 @@
+name: Apply Villa Almale guide corrections once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-guide-fix-once.yml
+
+concurrency:
+  group: villa-almale-guide-fix
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: Correct live guest guides
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate target and install transfer client
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current live guides
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live-guides/{fr,en,es}
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            set sftp:auto-confirm yes;
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/guide/fr/index.html\" -o live-guides/fr/index.html;
+            get \"$DEPLOY_PATH/guide/en/index.html\" -o live-guides/en/index.html;
+            get \"$DEPLOY_PATH/guide/es/index.html\" -o live-guides/es/index.html;
+            bye
+          "
+          cp -a live-guides live-guides-before-fix
+
+      - name: Correct equipment and oven information
+        run: python3 scripts/fix-live-guides.py live-guides
+
+      - name: Validate corrected guides
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "Trois appareils, usage raisonné" live-guides/fr/index.html
+          grep -q "Plaques de cuisson et four" live-guides/fr/index.html
+          grep -q "Trousse à pharmacie" live-guides/fr/index.html
+          ! grep -q "Four actuellement indisponible" live-guides/fr/index.html
+
+          grep -q "Three units, responsible use" live-guides/en/index.html
+          grep -q "Hob and oven" live-guides/en/index.html
+          grep -q "First-aid kit" live-guides/en/index.html
+          ! grep -q "Oven currently unavailable" live-guides/en/index.html
+
+          grep -q "zona de dormitorio de la planta baja" live-guides/es/index.html
+          grep -q "Placa y horno" live-guides/es/index.html
+          grep -q "Botiquín" live-guides/es/index.html
+          ! grep -q "Horno actualmente no disponible" live-guides/es/index.html
+
+      - name: Upload corrected live guides
+        shell: bash
+        run: |
+          set -euo pipefail
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            set sftp:auto-confirm yes;
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put live-guides/fr/index.html -o \"$DEPLOY_PATH/guide/fr/index.html\";
+            put live-guides/en/index.html -o \"$DEPLOY_PATH/guide/en/index.html\";
+            put live-guides/es/index.html -o \"$DEPLOY_PATH/guide/es/index.html\";
+            bye
+          "
+
+      - name: Verify remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p remote-check/{fr,en,es}
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            set sftp:auto-confirm yes;
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/guide/fr/index.html\" -o remote-check/fr/index.html;
+            get \"$DEPLOY_PATH/guide/en/index.html\" -o remote-check/en/index.html;
+            get \"$DEPLOY_PATH/guide/es/index.html\" -o remote-check/es/index.html;
+            bye
+          "
+          cmp live-guides/fr/index.html remote-check/fr/index.html
+          cmp live-guides/en/index.html remote-check/en/index.html
+          cmp live-guides/es/index.html remote-check/es/index.html
+
+      - name: Preserve pre-fix guide backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-guides-before-fix-${{ github.run_id }}
+          path: live-guides-before-fix/
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "### Villa Almale guides corrected" >> "$GITHUB_STEP_SUMMARY"
+          echo "Updated FR, EN and ES guide pages; remote files verified byte for byte." >> "$GITHUB_STEP_SUMMARY"
