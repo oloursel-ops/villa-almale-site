@@ -60,6 +60,11 @@ jobs:
           : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
           : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
 
+          if [ "$DEPLOY_PATH" = "/" ] || [[ "$DEPLOY_PATH" != /sites/* ]]; then
+            echo "Unsafe INFOMANIAK_PATH. Expected the site directory under /sites/, never /."
+            exit 1
+          fi
+
           case "$DEPLOY_SCHEME" in
             sftp)
               EXTRA_SETTINGS="set sftp:auto-confirm yes;"
@@ -96,7 +101,10 @@ jobs:
               set net:timeout 30;
               $EXTRA_SETTINGS
               open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-              mirror --verbose \"$DEPLOY_PATH\" ./remote-backup;
+              mirror --verbose \
+                --exclude-glob ._DEPLOY*/ \
+                --exclude-glob .git/ \
+                \"$DEPLOY_PATH\" ./remote-backup;
               bye
             "
             test -n "$(find remote-backup -mindepth 1 -print -quit)"
