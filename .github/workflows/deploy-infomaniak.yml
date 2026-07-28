@@ -1,15 +1,16 @@
-name: Test and deploy Villa Almale to Infomaniak
+name: Test, back up and deploy Villa Almale to Infomaniak
 
 on:
   workflow_dispatch:
     inputs:
       operation:
-        description: "Choose a safe connection test or a real upload"
+        description: "Choose connection test, remote backup, or safe upload"
         required: true
         default: test
         type: choice
         options:
           - test
+          - backup
           - deploy
 
 concurrency:
@@ -21,7 +22,7 @@ permissions:
 
 jobs:
   transfer:
-    name: ${{ inputs.operation == 'deploy' && 'Publish production site' || 'Test Infomaniak connection' }}
+    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Test Infomaniak connection' }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -39,7 +40,7 @@ jobs:
       - name: Install transfer client
         run: sudo apt-get update && sudo apt-get install -y lftp
 
-      - name: Test connection or deploy
+      - name: Test connection, back up, or deploy
         env:
           OPERATION: ${{ inputs.operation }}
           DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
@@ -87,6 +88,19 @@ jobs:
               bye
             "
             echo "Connection test succeeded. No file was changed."
+          elif [ "$OPERATION" = "backup" ]; then
+            mkdir -p remote-backup
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              mirror --verbose \"$DEPLOY_PATH\" ./remote-backup;
+              bye
+            "
+            test -n "$(find remote-backup -mindepth 1 -print -quit)"
+            echo "Remote backup downloaded. No production file was changed."
           else
             lftp -c "
               set cmd:fail-exit yes;
@@ -104,10 +118,27 @@ jobs:
             echo "Upload succeeded. Existing remote-only files were not deleted."
           fi
 
+      - name: Package remote backup
+        if: ${{ inputs.operation == 'backup' }}
+        run: tar -czf villa-almale-infomaniak-backup-${{ github.run_id }}.tar.gz -C remote-backup .
+
+      - name: Upload remote backup artifact
+        if: ${{ inputs.operation == 'backup' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-infomaniak-backup-${{ github.run_id }}
+          path: villa-almale-infomaniak-backup-${{ github.run_id }}.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Operation summary
         run: |
           if [ "${{ inputs.operation }}" = "test" ]; then
             echo "### Infomaniak connection verified" >> "$GITHUB_STEP_SUMMARY"
+            echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ inputs.operation }}" = "backup" ]; then
+            echo "### Infomaniak production backup created" >> "$GITHUB_STEP_SUMMARY"
+            echo "The downloadable archive is stored as a workflow artifact for 30 days." >> "$GITHUB_STEP_SUMMARY"
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Villa Almale uploaded" >> "$GITHUB_STEP_SUMMARY"
