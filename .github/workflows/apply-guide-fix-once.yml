@@ -12,7 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
+  issues: write
 
 jobs:
   apply:
@@ -122,24 +123,31 @@ jobs:
           path: live-guides-before-fix/
           retention-days: 30
 
-      - name: Record successful deployment
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p deployment-status
-          cat > deployment-status/guide-fix-success.txt <<EOF
-          Guide correction completed successfully.
-          Run ID: $GITHUB_RUN_ID
-          Commit: $GITHUB_SHA
-          French, English and Spanish remote files were verified byte for byte.
-          EOF
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add deployment-status/guide-fix-success.txt
-          git commit -m "Record successful live guide correction"
-          git push
+      - name: Report automation result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale guide correction — ${status}`;
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              status === 'success'
+                ? 'The French, English and Spanish guide files were uploaded to Infomaniak and verified byte for byte.'
+                : 'The workflow stopped before a verified publication. Review the run log for the failing step.'
+            ].join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body
+            });
 
       - name: Summary
+        if: ${{ success() }}
         run: |
           echo "### Villa Almale guides corrected" >> "$GITHUB_STEP_SUMMARY"
           echo "Updated FR, EN and ES guide pages; remote files verified byte for byte." >> "$GITHUB_STEP_SUMMARY"
