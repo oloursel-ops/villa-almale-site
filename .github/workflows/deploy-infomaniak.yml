@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   transfer:
-    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Test Infomaniak connection' }}
+    name: ${{ inputs.operation == 'deploy' && 'Publish production site safely' || inputs.operation == 'backup' && 'Back up Infomaniak site' || 'Inspect Infomaniak SFTP root' }}
     runs-on: ubuntu-latest
     environment: production
 
@@ -58,12 +58,6 @@ jobs:
           : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
           : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
           : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
-          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
-
-          if [ "$DEPLOY_PATH" = "/" ] || [[ "$DEPLOY_PATH" != /sites/* ]]; then
-            echo "Unsafe INFOMANIAK_PATH. Expected the site directory under /sites/, never /."
-            exit 1
-          fi
 
           case "$DEPLOY_SCHEME" in
             sftp)
@@ -88,42 +82,55 @@ jobs:
               set net:timeout 20;
               $EXTRA_SETTINGS
               open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-              cd \"$DEPLOY_PATH\";
+              echo '=== CURRENT DIRECTORY ===';
+              pwd;
+              echo '=== ROOT CONTENTS ===';
               cls -la;
+              echo '=== FIRST-LEVEL DIRECTORIES ===';
+              find -d 2;
               bye
             "
-            echo "Connection test succeeded. No file was changed."
-          elif [ "$OPERATION" = "backup" ]; then
-            mkdir -p remote-backup
-            lftp -c "
-              set cmd:fail-exit yes;
-              set net:max-retries 2;
-              set net:timeout 30;
-              $EXTRA_SETTINGS
-              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-              mirror --verbose \
-                --exclude-glob ._DEPLOY*/ \
-                --exclude-glob .git/ \
-                \"$DEPLOY_PATH\" ./remote-backup;
-              bye
-            "
-            test -n "$(find remote-backup -mindepth 1 -print -quit)"
-            echo "Remote backup downloaded. No production file was changed."
+            echo "SFTP root inspection succeeded. No file was changed."
           else
-            lftp -c "
-              set cmd:fail-exit yes;
-              set net:max-retries 2;
-              set net:timeout 20;
-              $EXTRA_SETTINGS
-              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
-              mirror --reverse --verbose \
-                --exclude-glob .git/ \
-                --exclude-glob .github/ \
-                --exclude-glob DEPLOYMENT.md \
-                ./ \"$DEPLOY_PATH\";
-              bye
-            "
-            echo "Upload succeeded. Existing remote-only files were not deleted."
+            : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
+
+            if [ "$DEPLOY_PATH" = "/" ]; then
+              echo "Unsafe INFOMANIAK_PATH: refusing backup or deployment to /."
+              exit 1
+            fi
+
+            if [ "$OPERATION" = "backup" ]; then
+              mkdir -p remote-backup
+              lftp -c "
+                set cmd:fail-exit yes;
+                set net:max-retries 2;
+                set net:timeout 30;
+                $EXTRA_SETTINGS
+                open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+                mirror --verbose \
+                  --exclude-glob ._DEPLOY*/ \
+                  --exclude-glob .git/ \
+                  \"$DEPLOY_PATH\" ./remote-backup;
+                bye
+              "
+              test -n "$(find remote-backup -mindepth 1 -print -quit)"
+              echo "Remote backup downloaded. No production file was changed."
+            else
+              lftp -c "
+                set cmd:fail-exit yes;
+                set net:max-retries 2;
+                set net:timeout 20;
+                $EXTRA_SETTINGS
+                open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+                mirror --reverse --verbose \
+                  --exclude-glob .git/ \
+                  --exclude-glob .github/ \
+                  --exclude-glob DEPLOYMENT.md \
+                  ./ \"$DEPLOY_PATH\";
+                bye
+              "
+              echo "Upload succeeded. Existing remote-only files were not deleted."
+            fi
           fi
 
       - name: Package remote backup
@@ -142,7 +149,8 @@ jobs:
       - name: Operation summary
         run: |
           if [ "${{ inputs.operation }}" = "test" ]; then
-            echo "### Infomaniak connection verified" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Infomaniak SFTP root inspected" >> "$GITHUB_STEP_SUMMARY"
+            echo "Review the job log to identify the site path visible to this user." >> "$GITHUB_STEP_SUMMARY"
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ inputs.operation }}" = "backup" ]; then
             echo "### Infomaniak production backup created" >> "$GITHUB_STEP_SUMMARY"
