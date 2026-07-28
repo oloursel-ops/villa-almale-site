@@ -1,0 +1,237 @@
+name: Apply Villa Almale SEO foundations once
+run-name: Apply verified SEO foundations to production
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-seo-foundations-once.yml
+      - scripts/apply-seo-foundations.py
+
+concurrency:
+  group: villa-almale-seo-foundations
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  apply:
+    name: Improve and verify live technical SEO
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate target and install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check pillow
+
+      - name: Download current production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/{en,es,villa-nuevo-portil,en/holiday-villa-nuevo-portil,es/alquiler-vacacional-nuevo-portil,off-season/fr,off-season/es,guide/fr,guide/en,guide/es,assets/images/current}
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            set sftp:auto-confirm yes;
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/.htaccess\" -o live/.htaccess;
+            get \"$DEPLOY_PATH/robots.txt\" -o live/robots.txt;
+            get \"$DEPLOY_PATH/sitemap.xml\" -o live/sitemap.xml;
+            get \"$DEPLOY_PATH/index.html\" -o live/index.html;
+            get \"$DEPLOY_PATH/en/index.html\" -o live/en/index.html;
+            get \"$DEPLOY_PATH/es/index.html\" -o live/es/index.html;
+            get \"$DEPLOY_PATH/villa-nuevo-portil/index.html\" -o live/villa-nuevo-portil/index.html;
+            get \"$DEPLOY_PATH/en/holiday-villa-nuevo-portil/index.html\" -o live/en/holiday-villa-nuevo-portil/index.html;
+            get \"$DEPLOY_PATH/es/alquiler-vacacional-nuevo-portil/index.html\" -o live/es/alquiler-vacacional-nuevo-portil/index.html;
+            get \"$DEPLOY_PATH/off-season/index.html\" -o live/off-season/index.html;
+            get \"$DEPLOY_PATH/off-season/fr/index.html\" -o live/off-season/fr/index.html;
+            get \"$DEPLOY_PATH/off-season/es/index.html\" -o live/off-season/es/index.html;
+            get \"$DEPLOY_PATH/reservation.html\" -o live/reservation.html;
+            get \"$DEPLOY_PATH/en/reservation.html\" -o live/en/reservation.html;
+            get \"$DEPLOY_PATH/es/reservation.html\" -o live/es/reservation.html;
+            get \"$DEPLOY_PATH/legal.html\" -o live/legal.html;
+            get \"$DEPLOY_PATH/privacy.html\" -o live/privacy.html;
+            get \"$DEPLOY_PATH/cookies.html\" -o live/cookies.html;
+            get \"$DEPLOY_PATH/booking-terms.html\" -o live/booking-terms.html;
+            get \"$DEPLOY_PATH/guide/index.html\" -o live/guide/index.html;
+            get \"$DEPLOY_PATH/guide/fr/index.html\" -o live/guide/fr/index.html;
+            get \"$DEPLOY_PATH/guide/en/index.html\" -o live/guide/en/index.html;
+            get \"$DEPLOY_PATH/guide/es/index.html\" -o live/guide/es/index.html;
+            get \"$DEPLOY_PATH/assets/images/current/hero-villa-piscine-jardin.webp\" -o live/assets/images/current/hero-villa-piscine-jardin.webp;
+            bye
+          "
+          cp -a live live-before-seo
+
+      - name: Generate responsive hero images
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+
+          source = Path('live/assets/images/current/hero-villa-piscine-jardin.webp')
+          image = Image.open(source).convert('RGB')
+          for width, quality in ((768, 82), (1280, 84)):
+              height = round(image.height * width / image.width)
+              resized = image.resize((width, height), Image.Resampling.LANCZOS)
+              target = source.with_name(f'hero-villa-piscine-jardin-{width}.webp')
+              resized.save(target, 'WEBP', quality=quality, method=6)
+              print(f'{target}: {target.stat().st_size} bytes')
+          PY
+
+      - name: Apply and validate SEO improvements
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 scripts/apply-seo-foundations.py live 2>&1 | tee seo-update.log
+
+      - name: Validate generated files
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'RewriteRule ^(.*/)?index\\.html$ /$1 \[R=301,L,NE\]' live/.htaccess
+          grep -q 'Strict-Transport-Security' live/.htaccess
+          grep -q 'Sitemap: https://villanuevoportil.com/sitemap.xml' live/robots.txt
+          test "$(grep -c '<loc>' live/sitemap.xml)" -eq 9
+          ! grep -q 'index.html' live/sitemap.xml
+          grep -q 'hero-villa-piscine-jardin-768.webp 768w' live/index.html
+          grep -q 'hero-villa-piscine-jardin-768.webp 768w' live/en/index.html
+          grep -q 'hero-villa-piscine-jardin-768.webp 768w' live/es/index.html
+          grep -q 'noindex,follow,noarchive' live/guide/fr/index.html
+          grep -q 'noindex,follow,noarchive' live/reservation.html
+          grep -q 'Three portable air-conditioning units in selected rooms' live/index.html
+          test -s live/assets/images/current/hero-villa-piscine-jardin-768.webp
+          test -s live/assets/images/current/hero-villa-piscine-jardin-1280.webp
+
+      - name: Build deployment manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          find live -type f -printf '%P\n' | sort > seo-manifest.txt
+          cat seo-manifest.txt
+
+      - name: Upload targeted production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            set sftp:auto-confirm yes;
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            mirror --reverse --verbose --parallel=2 live \"$DEPLOY_PATH\";
+            bye
+          "
+
+      - name: Verify remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p remote-check
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 2;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              mkdir -p "remote-check/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "remote-check/$file"
+            done < seo-manifest.txt
+            echo 'bye'
+          } > verify.lftp
+          lftp -f verify.lftp
+          while IFS= read -r file; do
+            cmp "live/$file" "remote-check/$file"
+          done < seo-manifest.txt
+
+      - name: Verify public redirects and SEO endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "HTTP index: $(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://villanuevoportil.com/index.html)"
+            echo "HTTPS index: $(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://villanuevoportil.com/index.html)"
+            echo "EN index: $(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' https://villanuevoportil.com/en/index.html)"
+            echo "Sitemap: $(curl -sS -o /dev/null -w '%{http_code}' https://villanuevoportil.com/sitemap.xml)"
+            echo "Robots: $(curl -sS -o /dev/null -w '%{http_code}' https://villanuevoportil.com/robots.txt)"
+            echo "Hero 768: $(curl -sS -o /dev/null -w '%{http_code}' https://villanuevoportil.com/assets/images/current/hero-villa-piscine-jardin-768.webp)"
+          } | tee public-verification.log
+          grep -q '^HTTP index: 301 ' public-verification.log
+          grep -q '^HTTPS index: 301 ' public-verification.log
+          grep -q '^EN index: 301 ' public-verification.log
+          grep -q '^Sitemap: 200$' public-verification.log
+          grep -q '^Robots: 200$' public-verification.log
+          grep -q '^Hero 768: 200$' public-verification.log
+          curl -fsS https://villanuevoportil.com/sitemap.xml | grep -q '<loc>https://villanuevoportil.com/</loc>'
+          curl -fsS https://villanuevoportil.com/robots.txt | grep -q 'Sitemap: https://villanuevoportil.com/sitemap.xml'
+
+      - name: Preserve pre-update backup
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          tar -czf villa-almale-before-seo-${{ github.run_id }}.tar.gz -C live-before-seo .
+
+      - name: Upload pre-update backup artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-before-seo-${{ github.run_id }}
+          path: villa-almale-before-seo-${{ github.run_id }}.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Report automation result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale SEO foundations — ${status}`;
+            const chunks = [];
+            for (const file of ['seo-update.log', 'public-verification.log']) {
+              if (fs.existsSync(file)) chunks.push(`${file}:\n${fs.readFileSync(file, 'utf8').slice(-5000)}`);
+            }
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              status === 'success'
+                ? 'HTTPS and canonical redirects, focused sitemap, noindex utility pages, responsive hero images, structured-data updates and remote byte-for-byte verification all succeeded.'
+                : `Diagnostic:\n\n\`\`\`text\n${chunks.join('\n\n') || 'No diagnostic file was produced.'}\n\`\`\``
+            ].join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body
+            });
+
+      - name: Summary
+        if: ${{ success() }}
+        run: |
+          echo "### Villa Almale technical SEO improved" >> "$GITHUB_STEP_SUMMARY"
+          echo "Canonical HTTPS redirects, focused sitemap, utility-page noindexing, responsive hero images and structured-data updates were published and verified." >> "$GITHUB_STEP_SUMMARY"
