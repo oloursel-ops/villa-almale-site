@@ -98,8 +98,8 @@ jobs:
           else
             : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
 
-            if [ "$DEPLOY_PATH" = "/" ]; then
-              echo "Unsafe INFOMANIAK_PATH: refusing backup or deployment to /."
+            if [ "$DEPLOY_PATH" != "sites/PageWebbasique1" ]; then
+              echo "Unsafe INFOMANIAK_PATH. Expected exactly: sites/PageWebbasique1"
               exit 1
             fi
 
@@ -154,7 +154,6 @@ jobs:
         run: |
           if [ "${{ inputs.operation }}" = "test" ]; then
             echo "### Infomaniak site directories inspected" >> "$GITHUB_STEP_SUMMARY"
-            echo "Review the job log for the exact directory name under sites." >> "$GITHUB_STEP_SUMMARY"
             echo "No production file was modified." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ inputs.operation }}" = "backup" ]; then
             echo "### Infomaniak production backup created" >> "$GITHUB_STEP_SUMMARY"
