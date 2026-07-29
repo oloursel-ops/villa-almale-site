@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('live')
+DATE = '2026-07-29'
+BASE = 'https://villanuevoportil.com'
+AIRBNB = 'https://www.airbnb.com/rooms/880876896761619102'
+VRBO = 'https://www.vrbo.com/8160054ha'
+HERO = '/assets/images/current/hero-villa-piscine-jardin.webp'
+HERO_768 = '/assets/images/current/hero-villa-piscine-jardin-768.webp'
+HERO_1280 = '/assets/images/current/hero-villa-piscine-jardin-1280.webp'
+
+PAGES: dict[str, dict[str, Any]] = {
+    'index.html': {'canonical': f'{BASE}/', 'lang': 'fr', 'home': True, 'alternates': {'fr': f'{BASE}/', 'en': f'{BASE}/en/', 'es': f'{BASE}/es/', 'x-default': f'{BASE}/'}},
+    'en/index.html': {'canonical': f'{BASE}/en/', 'lang': 'en', 'home': True, 'alternates': {'fr': f'{BASE}/', 'en': f'{BASE}/en/', 'es': f'{BASE}/es/', 'x-default': f'{BASE}/'}},
+    'es/index.html': {'canonical': f'{BASE}/es/', 'lang': 'es', 'home': True, 'alternates': {'fr': f'{BASE}/', 'en': f'{BASE}/en/', 'es': f'{BASE}/es/', 'x-default': f'{BASE}/'}},
+    'villa-nuevo-portil/index.html': {'canonical': f'{BASE}/villa-nuevo-portil/', 'lang': 'fr', 'alternates': {'fr': f'{BASE}/villa-nuevo-portil/', 'en': f'{BASE}/en/holiday-villa-nuevo-portil/', 'es': f'{BASE}/es/alquiler-vacacional-nuevo-portil/', 'x-default': f'{BASE}/en/holiday-villa-nuevo-portil/'}},
+    'en/holiday-villa-nuevo-portil/index.html': {'canonical': f'{BASE}/en/holiday-villa-nuevo-portil/', 'lang': 'en', 'alternates': {'fr': f'{BASE}/villa-nuevo-portil/', 'en': f'{BASE}/en/holiday-villa-nuevo-portil/', 'es': f'{BASE}/es/alquiler-vacacional-nuevo-portil/', 'x-default': f'{BASE}/en/holiday-villa-nuevo-portil/'}},
+    'es/alquiler-vacacional-nuevo-portil/index.html': {'canonical': f'{BASE}/es/alquiler-vacacional-nuevo-portil/', 'lang': 'es', 'alternates': {'fr': f'{BASE}/villa-nuevo-portil/', 'en': f'{BASE}/en/holiday-villa-nuevo-portil/', 'es': f'{BASE}/es/alquiler-vacacional-nuevo-portil/', 'x-default': f'{BASE}/en/holiday-villa-nuevo-portil/'}},
+    'off-season/index.html': {'canonical': f'{BASE}/off-season/', 'lang': 'en', 'alternates': {'en': f'{BASE}/off-season/', 'fr': f'{BASE}/off-season/fr/', 'es': f'{BASE}/off-season/es/', 'x-default': f'{BASE}/off-season/'}},
+    'off-season/fr/index.html': {'canonical': f'{BASE}/off-season/fr/', 'lang': 'fr', 'alternates': {'en': f'{BASE}/off-season/', 'fr': f'{BASE}/off-season/fr/', 'es': f'{BASE}/off-season/es/', 'x-default': f'{BASE}/off-season/'}},
+    'off-season/es/index.html': {'canonical': f'{BASE}/off-season/es/', 'lang': 'es', 'alternates': {'en': f'{BASE}/off-season/', 'fr': f'{BASE}/off-season/fr/', 'es': f'{BASE}/off-season/es/', 'x-default': f'{BASE}/off-season/'}},
+}
+
+AC = {
+    'fr': 'La maison n’est pas entièrement climatisée. Trois climatiseurs mobiles sont installés dans la suite principale (7 000 BTU), le salon (9 000 BTU) et l’espace nuit du rez-de-chaussée (9 000 BTU). Les deux chambres avec lits simples disposent chacune d’un ventilateur de plafond.',
+    'en': 'The house is not fully air-conditioned. Three portable units are installed in the main suite (7,000 BTU), the living room (9,000 BTU) and the ground-floor sleeping area (9,000 BTU). Each of the two twin bedrooms has a ceiling fan.',
+    'es': 'La casa no está climatizada por completo. Hay tres equipos portátiles en la suite principal (7.000 BTU), el salón (9.000 BTU) y la zona de dormitorio de la planta baja (9.000 BTU). Cada uno de los dos dormitorios con camas individuales dispone de ventilador de techo.',
+}
+AC_SHORT = {
+    'fr': 'La maison n’est pas entièrement climatisée : 3 climatiseurs mobiles — 7 000 BTU dans la suite principale, 9 000 BTU dans le salon et 9 000 BTU dans l’espace nuit du rez-de-chaussée. Ventilateurs de plafond dans les deux chambres à lits simples.',
+    'en': 'The house is not fully air-conditioned: 3 portable units — 7,000 BTU in the main suite, 9,000 BTU in the living room and 9,000 BTU in the ground-floor sleeping area. Ceiling fans in both twin bedrooms.',
+    'es': 'La casa no está climatizada por completo: 3 equipos portátiles — 7.000 BTU en la suite principal, 9.000 BTU en el salón y 9.000 BTU en la zona de dormitorio de la planta baja. Ventiladores de techo en los dos dormitorios con camas individuales.',
+}
+
+HTACCESS = r'''DirectoryIndex index.html
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+ RewriteEngine On
+
+ # Remove explicit index.html and canonicalise host/protocol in a single redirect.
+ RewriteCond %{THE_REQUEST} \s/+(.*/)?index\.html(?:[?\s]) [NC]
+ RewriteRule ^(.*/)?index\.html$ https://villanuevoportil.com/$1 [R=301,L,NE]
+
+ # One secure canonical host for every other public URL.
+ RewriteCond %{HTTPS} !=on [OR]
+ RewriteCond %{HTTP_HOST} !^villanuevoportil\.com$ [NC]
+ RewriteRule ^ https://villanuevoportil.com%{REQUEST_URI} [R=301,L,NE]
+
+ # Deny deployment archives, diagnostics and private documents left in the web root.
+ RewriteRule ^(?:_DEPLOY_[^/]*|web_upload|__MACOSX|content)(?:/|$) - [F,L,NC]
+ RewriteRule ^(?:README[^/]*|AUDIENCE-ACTIVATION-CHECKLIST\.md|test-ownerrez[^/]*\.html|ownerrez-diagnostic[^/]*|ownerrez-calendar-[^/]*\.html)$ - [F,L,NC]
+ RewriteRule \.(?:zip|docx|md|pdf)$ - [F,L,NC]
+</IfModule>
+
+<IfModule mod_headers.c>
+ Header always set X-Content-Type-Options "nosniff"
+ Header always set Referrer-Policy "strict-origin-when-cross-origin"
+ Header always set Permissions-Policy "camera=(), microphone=(), geolocation=()"
+ Header always set Strict-Transport-Security "max-age=31536000"
+ <FilesMatch "\.(?:webp|avif|jpg|jpeg|png|svg|ico)$">
+  Header set Cache-Control "public, max-age=31536000, immutable"
+ </FilesMatch>
+ <FilesMatch "\.(?:css|js)$">
+  Header set Cache-Control "public, max-age=2592000"
+ </FilesMatch>
+ <FilesMatch "\.(?:html?|xml|txt)$">
+  Header set Cache-Control "public, max-age=0, must-revalidate"
+ </FilesMatch>
+</IfModule>
+
+<IfModule mod_brotli.c>
+ AddOutputFilterByType BROTLI_COMPRESS text/html text/plain text/css application/javascript application/json application/ld+json application/xml image/svg+xml
+</IfModule>
+<IfModule mod_deflate.c>
+ AddOutputFilterByType DEFLATE text/html text/plain text/css application/javascript application/json application/ld+json application/xml image/svg+xml
+</IfModule>
+
+<IfModule mod_expires.c>
+ ExpiresActive On
+ ExpiresByType image/webp "access plus 1 year"
+ ExpiresByType image/avif "access plus 1 year"
+ ExpiresByType image/svg+xml "access plus 1 year"
+ ExpiresByType text/css "access plus 30 days"
+ ExpiresByType application/javascript "access plus 30 days"
+ ExpiresByType text/html "access plus 0 seconds"
+</IfModule>
+'''
+
+ROBOTS = f'''User-agent: *
+Allow: /
+Disallow: /_DEPLOY_
+Disallow: /web_upload/
+Disallow: /__MACOSX/
+Disallow: /content/
+Disallow: /test-ownerrez
+Disallow: /ownerrez-diagnostic
+Disallow: /ownerrez-calendar-
+Disallow: /*.zip$
+Disallow: /*.docx$
+Disallow: /*.pdf$
+
