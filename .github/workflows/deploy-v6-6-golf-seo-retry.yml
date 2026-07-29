@@ -1,0 +1,271 @@
+name: Deploy Villa Almale V6.6 retry
+run-name: Deploy and verify Villa Almale V6.6 — corrected upload
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v6-6-golf-seo-retry.yml
+
+concurrency:
+  group: villa-almale-v6-6-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, deploy, verify and preserve V6.6
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate target and install lftp
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Define target manifest
+        shell: bash
+        run: |
+          cat > manifest.txt <<'MANIFEST'
+          .htaccess
+          robots.txt
+          sitemap.xml
+          index.html
+          en/index.html
+          es/index.html
+          villa-nuevo-portil/index.html
+          en/holiday-villa-nuevo-portil/index.html
+          es/alquiler-vacacional-nuevo-portil/index.html
+          off-season/index.html
+          off-season/fr/index.html
+          off-season/es/index.html
+          MANIFEST
+          test "$(grep -cve '^$' manifest.txt)" -eq 12
+
+      - name: Download and archive current production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live before
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 2;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "live/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -a live/. before/
+          while IFS= read -r file; do test -s "before/$file"; done < manifest.txt
+          tar -czf "villa-almale-before-v66-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Build and validate V6.6 files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat scripts/v66-parts/part-*.pyfrag > deploy-v66-golf-seo.py
+          python3 -m py_compile deploy-v66-golf-seo.py
+          python3 deploy-v66-golf-seo.py live 2>&1 | tee v66-update.log
+          grep -q 'Trois climatiseurs mobiles' live/index.html
+          grep -q 'Three portable units' live/en/index.html
+          grep -q 'tres equipos portátiles' live/es/index.html
+          grep -q 'Walk to the course. Play. Come home.' live/off-season/index.html
+          grep -q 'moins d’une minute' live/off-season/fr/index.html
+          grep -q 'menos de un minuto' live/off-season/es/index.html
+          grep -q 'RewriteRule ^(.*/)?index\.html$ https://villanuevoportil.com/$1 \[R=301,L,NE\]' live/.htaccess
+          test "$(grep -c '<loc>' live/sitemap.xml)" -eq 9
+          ! grep -q 'index.html' live/sitemap.xml
+
+      - name: Upload only existing target files
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 2;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > upload-v66.lftp
+          lftp -f upload-v66.lftp 2>&1 | tee upload-v66.log
+
+      - name: Compare remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 2;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "after/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "after/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          while IFS= read -r file; do cmp "live/$file" "after/$file"; done < manifest.txt
+          tar -czf "villa-almale-after-v66-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public redirects and pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 4
+          check_redirect() {
+            local source="$1" expected="$2" actual
+            actual="$(curl -sS -o /dev/null -w '%{http_code}|%{redirect_url}' "$source")"
+            printf '%s -> %s\n' "$source" "$actual" | tee -a public-verification.log
+            test "$actual" = "301|$expected"
+          }
+          : > public-verification.log
+          check_redirect 'http://www.villanuevoportil.com/en/index.html' 'https://villanuevoportil.com/en/'
+          check_redirect 'https://www.villanuevoportil.com/' 'https://villanuevoportil.com/'
+          check_redirect 'https://villanuevoportil.com/index.html' 'https://villanuevoportil.com/'
+          check_redirect 'https://villanuevoportil.com/es/index.html' 'https://villanuevoportil.com/es/'
+          curl -fsS 'https://villanuevoportil.com/' -o public-fr.html
+          curl -fsS 'https://villanuevoportil.com/en/' -o public-en.html
+          curl -fsS 'https://villanuevoportil.com/es/' -o public-es.html
+          curl -fsS 'https://villanuevoportil.com/off-season/' -o public-golf-en.html
+          curl -fsS 'https://villanuevoportil.com/off-season/fr/' -o public-golf-fr.html
+          curl -fsS 'https://villanuevoportil.com/off-season/es/' -o public-golf-es.html
+          curl -fsS 'https://villanuevoportil.com/sitemap.xml' -o public-sitemap.xml
+          curl -fsS 'https://villanuevoportil.com/robots.txt' -o public-robots.txt
+          grep -q 'Trois climatiseurs mobiles' public-fr.html
+          grep -q 'Three portable units' public-en.html
+          grep -q 'tres equipos portátiles' public-es.html
+          grep -q 'Walk to the course. Play. Come home.' public-golf-en.html
+          grep -q 'moins d’une minute' public-golf-fr.html
+          grep -q 'menos de un minuto' public-golf-es.html
+          grep -q 'private gate on the property boundary is not a guest entrance' public-golf-en.html
+          grep -q 'porte privée en limite de propriété n’est pas une entrée voyageurs' public-golf-fr.html
+          grep -q 'puerta privada en el límite de la parcela no es una entrada para viajeros' public-golf-es.html
+          test "$(grep -c '<loc>' public-sitemap.xml)" -eq 9
+          ! grep -q 'index.html' public-sitemap.xml
+          grep -q 'Sitemap: https://villanuevoportil.com/sitemap.xml' public-robots.txt
+          python3 - <<'PY'
+          import json, re
+          from pathlib import Path
+          expected = {
+              'public-fr.html': 'https://villanuevoportil.com/',
+              'public-en.html': 'https://villanuevoportil.com/en/',
+              'public-es.html': 'https://villanuevoportil.com/es/',
+              'public-golf-en.html': 'https://villanuevoportil.com/off-season/',
+              'public-golf-fr.html': 'https://villanuevoportil.com/off-season/fr/',
+              'public-golf-es.html': 'https://villanuevoportil.com/off-season/es/',
+          }
+          for name, canonical in expected.items():
+              text = Path(name).read_text(encoding='utf-8')
+              assert len(re.findall(r'<h1\b', text, flags=re.I)) == 1, name
+              assert not re.search(r'<h[23]\b[^>]*>\s*</h[23]>', text, flags=re.I | re.S), name
+              assert re.search(r'<link\b(?=[^>]*rel=["\']canonical["\'])(?=[^>]*href=["\']' + re.escape(canonical) + r'["\'])[^>]*>', text, flags=re.I), name
+              for raw in re.findall(r'<script\b[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', text, flags=re.I | re.S):
+                  json.loads(raw.strip())
+          print('Public HTML, canonicals, headings and JSON-LD validated.')
+          PY
+          echo 'Public redirects and V6.6 content verified.' | tee -a public-verification.log
+
+      - name: Restore targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -d before ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 2;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "before/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve backup artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-before-v66-${{ github.run_id }}
+          path: villa-almale-before-v66-${{ github.run_id }}.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Preserve verified V6.6 artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v66-verified-${{ github.run_id }}
+          path: |
+            villa-almale-after-v66-${{ github.run_id }}.tar.gz
+            v66-update.log
+            public-verification.log
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale V6.6 retry — ${status}`;
+            const chunks = [];
+            for (const file of ['v66-update.log', 'public-verification.log', 'upload-v66.log', 'rollback.log']) {
+              if (fs.existsSync(file)) chunks.push(`${file}:\n${fs.readFileSync(file, 'utf8').slice(-7000)}`);
+            }
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              status === 'success'
+                ? 'V6.6 was backed up, uploaded without directory creation, compared byte for byte and verified publicly.'
+                : `Failure diagnostic:\n\n\`\`\`text\n${chunks.join('\n\n') || 'No diagnostic file.'}\n\`\`\``
+            ].join('\n\n');
+            await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body});
