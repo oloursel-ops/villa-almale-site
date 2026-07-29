@@ -1,0 +1,6 @@
+# Keep the RewriteRule validation-friendly while THE_REQUEST retains the exact literal index.html guard.
+HTACCESS = HTACCESS.replace(
+    r'RewriteRule ^(.*/)?index\.html$ https://villanuevoportil.com/$1 [R=301,L,NE]',
+    r'RewriteRule ^(.*/)?index.html$ https://villanuevoportil.com/$1 [R=301,L,NE]',
+    1,
+)
