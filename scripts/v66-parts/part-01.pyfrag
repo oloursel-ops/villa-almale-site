@@ -1,0 +1,117 @@
+Sitemap: {BASE}/sitemap.xml
+'''
+
+
+def replace_present(text: str, old: str, new: str) -> str:
+    return text.replace(old, new) if old in text else text
+
+
+def replace_or_assert(text: str, old: str, new: str, marker: str, label: str) -> str:
+    if marker in text:
+        return text
+    if old not in text:
+        raise RuntimeError(f'{label}: neither old source nor new marker found')
+    return text.replace(old, new, 1)
+
+
+def set_title(text: str, value: str) -> str:
+    return re.sub(r'<title>.*?</title>', f'<title>{value}</title>', text, count=1, flags=re.I | re.S)
+
+
+def set_meta(text: str, attr: str, key: str, value: str) -> str:
+    pattern = rf'<meta\b(?=[^>]*\b{attr}=["\']{re.escape(key)}["\'])[^>]*>'
+    match = re.search(pattern, text, flags=re.I)
+    if not match:
+        raise RuntimeError(f'meta {attr}={key} missing')
+    tag = match.group(0)
+    if re.search(r'\bcontent=["\'][^"\']*["\']', tag, flags=re.I):
+        tag = re.sub(r'\bcontent=["\'][^"\']*["\']', f'content="{value}"', tag, count=1, flags=re.I)
+    else:
+        tag = tag[:-1] + f' content="{value}">'
+    return text[:match.start()] + tag + text[match.end():]
+
+
+def extract_french_copy(text: str) -> dict[str, str]:
+    anchor = text.find('const T=')
+    if anchor < 0:
+        return {}
+    start = text.find('{', anchor)
+    if start < 0:
+        return {}
+    depth = 0
+    in_string = False
+    escaped = False
+    for pos in range(start, len(text)):
+        char = text[pos]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        else:
+            if char == '"':
+                in_string = True
+            elif char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    try:
+                        payload = json.loads(text[start:pos + 1])
+                        return payload.get('fr', {}) if isinstance(payload, dict) else {}
+                    except json.JSONDecodeError:
+                        return {}
+    return {}
+
+
+def fill_empty_french_data(text: str) -> str:
+    mapping = extract_french_copy(text)
+    for key, value in mapping.items():
+        if not isinstance(value, str) or not value:
+            continue
+        pattern = re.compile(
+            rf'(<(?P<tag>[a-z][a-z0-9]*)\b[^>]*\bdata-i=["\']{re.escape(key)}["\'][^>]*>)\s*(</(?P=tag)>)',
+            flags=re.I,
+        )
+        text = pattern.sub(lambda m: m.group(1) + value + m.group(3), text)
+    return text
+
+
+def patch_ac(text: str) -> str:
+    replacements = {
+        # French visible copy and inline translation.
+        'Il n’y a pas de climatisation fixe. Un climatiseur mobile, deux ventilateurs et des ventilateurs supplémentaires sur demande sont disponibles.': AC['fr'],
+        '1 climatiseur mobile, 2 ventilateurs, d’autres sur demande et moustiquaires aux fenêtres équipées.': AC_SHORT['fr'],
+        'Il n’y a pas de climatisation fixe. Tout séjour très tard en automne ou en hiver n’est confirmé qu’après échange sur les besoins de confort.': AC['fr'] + ' Tout séjour très tard en automne ou en hiver n’est confirmé qu’après échange sur les besoins de confort.',
+        # English variants.
+        'There is no fixed air conditioning. One mobile unit, two fans and additional fans on request are available.': AC['en'],
+        'There is no fixed air conditioning. One portable unit, two fans and extra fans on request are available.': AC['en'],
+        'One mobile air-conditioning unit, two fans, additional fans on request and mosquito screens on equipped windows.': AC_SHORT['en'],
+        '1 portable air conditioner, 2 fans, more on request, and mosquito screens on equipped windows.': AC_SHORT['en'],
+        'There is no fixed air-conditioning. Any very late-autumn or winter stay is confirmed only after discussing comfort requirements.': AC['en'] + ' Any very late-autumn or winter stay is confirmed only after discussing comfort requirements.',
+        # Spanish variants.
+        'No hay aire acondicionado fijo. Hay un equipo portátil, dos ventiladores y ventiladores adicionales bajo petición.': AC['es'],
+        'No hay aire acondicionado fijo. Hay un aparato portátil, dos ventiladores y ventiladores adicionales bajo petición.': AC['es'],
+        'No hay aire acondicionado fijo. Hay un climatizador portátil, dos ventiladores y ventiladores adicionales bajo petición.': AC['es'],
+        'Un equipo portátil de aire acondicionado, dos ventiladores, ventiladores adicionales bajo petición y mosquiteras en las ventanas equipadas.': AC_SHORT['es'],
+        'Un aparato portátil, dos ventiladores, ventiladores adicionales bajo petición y mosquiteras en las ventanas equipadas.': AC_SHORT['es'],
+        '1 climatizador portátil, 2 ventiladores, más bajo petición y mosquiteras en las ventanas equipadas.': AC_SHORT['es'],
+        'No hay aire acondicionado fijo. Las estancias a finales de otoño o en invierno solo se confirman tras hablar de las necesidades de confort.': AC['es'] + ' Las estancias a finales de otoño o en invierno solo se confirman tras hablar de las necesidades de confort.',
+    }
+    for old, new in replacements.items():
+        text = replace_present(text, old, new)
+    return text
+
+
+def patch_home(text: str, lang: str) -> str:
+    if lang == 'fr':
+        old = 'Au printemps et à l’automne, la maison devient une base privée pour 4 à 6 golfeurs adultes ou des groupes mixtes : golf, côte, grandes tablées et dates plus souples hors été.'
+        new = 'Au printemps et à l’automne, Atlantic Golf House at Villa Almale devient une base privée pour 4 à 6 golfeurs adultes ou des groupes mixtes. L’accès piéton officiel au Golf Nuevo Portil est à moins d’une minute à pied ; golf, côte, grandes tablées et dates plus souples complètent le séjour.'
+        text = replace_or_assert(text, old, new, 'Atlantic Golf House at Villa Almale devient', 'FR home golf')
+        text = replace_present(text, 'Découvrir les séjours golf et hors saison →', 'Découvrir Atlantic Golf House et les séjours hors saison →')
+    elif lang == 'en':
+        old = 'In spring and autumn, Villa ALMALE becomes a private base for 4–6 adult golfers or mixed groups: golf, coast, shared meals and more flexible dates outside summer.'
+        new = 'In spring and autumn, Atlantic Golf House at Villa Almale becomes a private base for 4–6 adult golfers or mixed groups. The official pedestrian access to Golf Nuevo Portil is under one minute away on foot, with the coast, shared meals and more flexible dates outside summer.'
+        text = replace_or_assert(text, old, new, 'Atlantic Golf House at Villa Almale becomes', 'EN home golf')
