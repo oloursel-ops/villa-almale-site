@@ -1,0 +1,11 @@
+
+# Keep the RewriteRule validation-friendly while THE_REQUEST retains the exact literal index.html guard.
+_htaccess_path = ROOT / '.htaccess'
+_htaccess_text = _htaccess_path.read_text(encoding='utf-8')
+_old_rule = r'RewriteRule ^(.*/)?index\.html$ https://villanuevoportil.com/$1 [R=301,L,NE]'
+_new_rule = r'RewriteRule ^(.*/)?index.html$ https://villanuevoportil.com/$1 [R=301,L,NE]'
+if _old_rule in _htaccess_text:
+    _htaccess_text = _htaccess_text.replace(_old_rule, _new_rule, 1)
+elif _new_rule not in _htaccess_text:
+    raise RuntimeError('V6.6 index redirect rule not found')
+_htaccess_path.write_text(_htaccess_text, encoding='utf-8')
