@@ -1,0 +1,61 @@
+        text = replace_present(text, 'Explore golf and off-season stays →', 'Explore Atlantic Golf House and off-season stays →')
+    else:
+        old = 'En primavera y otoño, la villa se convierte en una base privada para 4–6 golfistas adultos o grupos mixtos: golf, costa, comidas compartidas y fechas más flexibles fuera del verano.'
+        new = 'En primavera y otoño, Atlantic Golf House at Villa Almale se convierte en una base privada para 4–6 golfistas adultos o grupos mixtos. El acceso peatonal oficial al Golf Nuevo Portil está a menos de un minuto a pie, con costa, comidas compartidas y fechas más flexibles fuera del verano.'
+        text = replace_or_assert(text, old, new, 'Atlantic Golf House at Villa Almale se convierte', 'ES home golf')
+        text = replace_present(text, 'Descubrir golf y temporada baja →', 'Descubrir Atlantic Golf House y las estancias fuera de temporada →')
+
+    shared = {
+        'Un parcours 18 trous, par 71, intégré à la pinède et praticable confortablement à pied.': 'L’accès piéton officiel au Golf Nuevo Portil se trouve à moins d’une minute à pied. Le parcours 18 trous, par 71, est intégré à la pinède.',
+        'An 18-hole, par-71 course set among pine trees and comfortably walkable.': 'The official pedestrian access to Golf Nuevo Portil is under one minute away on foot. The 18-hole, par-71 course is set among pine trees.',
+        'Un recorrido de 18 hoyos, par 71, integrado entre pinos y cómodo para recorrer a pie.': 'El acceso peatonal oficial al Golf Nuevo Portil está a menos de un minuto a pie. El recorrido de 18 hoyos, par 71, discurre entre pinares.',
+        'Nuevo Portil golf course borders the residential area; El Rompido is also close.': 'The official pedestrian access to Golf Nuevo Portil is under one minute away on foot; El Rompido is also close.',
+        'El campo de Nuevo Portil bordea la zona residencial; El Rompido también está cerca.': 'El acceso peatonal oficial al Golf Nuevo Portil está a menos de un minuto a pie; El Rompido también está cerca.',
+    }
+    for old, new in shared.items():
+        text = replace_present(text, old, new)
+    return text
+
+
+def patch_target(text: str, lang: str) -> str:
+    changes = {
+        'fr': (
+            'La plage de la Ría del Río Piedras se trouve à environ 10–15 minutes à pied. Le golf de Nuevo Portil borde le quartier résidentiel et El Rompido est tout proche.',
+            'La plage de la Ría del Río Piedras se trouve à environ 10–15 minutes à pied. L’accès piéton officiel au Golf Nuevo Portil est à moins d’une minute à pied de la villa, et El Rompido est tout proche.',
+            '<div class="fact">Golf à proximité</div>', '<div class="fact">Accès golf &lt; 1 min à pied</div>',
+        ),
+        'en': (
+            'Ría del Río Piedras beach is about a 10–15 minute walk away. Nuevo Portil golf course borders the residential area and El Rompido is nearby.',
+            'Ría del Río Piedras beach is about a 10–15 minute walk away. The official pedestrian access to Golf Nuevo Portil is under one minute away on foot, and El Rompido is nearby.',
+            '<div class="fact">Golf nearby</div>', '<div class="fact">Golf access &lt; 1 min walk</div>',
+        ),
+        'es': (
+            'La playa de la Ría del Río Piedras está a unos 10–15 minutos a pie. El campo de golf de Nuevo Portil linda con la zona residencial y El Rompido está muy cerca.',
+            'La playa de la Ría del Río Piedras está a unos 10–15 minutos a pie. El acceso peatonal oficial al Golf Nuevo Portil está a menos de un minuto a pie de la villa, y El Rompido está muy cerca.',
+            '<div class="fact">Golf cercano</div>', '<div class="fact">Acceso al golf &lt; 1 min a pie</div>',
+        ),
+    }
+    old, new, old_fact, new_fact = changes[lang]
+    text = replace_present(text, old, new)
+    text = replace_present(text, old_fact, new_fact)
+    return text
+
+
+def patch_offseason(text: str, lang: str) -> str:
+    cfg = {
+        'en': {
+            'title': 'Golf holidays in Nuevo Portil | Atlantic Golf House at Villa Almale',
+            'desc': 'Private five-bedroom house for 4–6 adult golfers in Nuevo Portil, with the official Golf Nuevo Portil access under one minute away on foot, between Seville and the Algarve.',
+            'old_hero': '<span class="eyebrow">Nuevo Portil · Costa de la Luz · spring and autumn</span><h1>Atlantic golf weeks. One private house.</h1><p class="lead">A five-bedroom villa for groups of 4–6 adult golfers — or mixed groups who want golf, coast and time together — between Seville and the Algarve.</p>',
+            'hero': '<span class="eyebrow">Atlantic Golf House at Villa Almale · Nuevo Portil</span><h1>Walk to the course. Play. Come home.</h1><p class="lead">A private five-bedroom house for 4–6 adult golfers — or mixed groups — with the official Golf Nuevo Portil access under one minute away on foot, between Seville and the Algarve.</p>',
+            'hero_marker': 'Walk to the course. Play. Come home.',
+            'old_stat': '<div class="stat"><strong>Local anchor</strong><span>Golf Nuevo Portil</span></div>',
+            'stat': '<div class="stat"><strong>Under 1 minute</strong><span>official golf access on foot</span></div>',
+            'notice': '<div class="notice-box golf-access" style="margin-bottom:22px"><strong>Golf at the doorstep.</strong> The official pedestrian access to Golf Nuevo Portil is beside the residential entrance and is reached in under one minute on foot. Guests use this official access; the small private gate on the property boundary is not a guest entrance.</div>',
+            'question': '<details><summary>Can we walk to Golf Nuevo Portil?</summary><p>Yes. The official pedestrian access is under one minute away on foot. Access is through the official golf entrance, not through the private gate on the property boundary.</p></details>',
+            'faq_anchor': '<details><summary>Is golf included in the price?</summary>',
+        },
+        'fr': {
+            'title': 'Séjours golf à Nuevo Portil | Atlantic Golf House at Villa Almale',
+            'desc': 'Maison privée de cinq chambres pour 4 à 6 golfeurs adultes à Nuevo Portil, avec accès officiel au Golf Nuevo Portil à moins d’une minute à pied, entre Séville et l’Algarve.',
+            'old_hero': '<span class="eyebrow">Nuevo Portil · Costa de la Luz · printemps et automne</span><h1>Des semaines golf sur l’Atlantique. Une maison privée.</h1><p class="lead">Une villa de cinq chambres pour 4 à 6 golfeurs adultes — ou des groupes mixtes qui veulent golf, côte et temps partagé — entre Séville et l’Algarve.</p>',
