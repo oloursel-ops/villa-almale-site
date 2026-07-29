@@ -1,0 +1,81 @@
+            'hero': '<span class="eyebrow">Atlantic Golf House at Villa Almale · Nuevo Portil</span><h1>Le parcours à pied. Jouer. Rentrer à la maison.</h1><p class="lead">Une maison privée de cinq chambres pour 4 à 6 golfeurs adultes — ou des groupes mixtes — avec l’accès officiel au Golf Nuevo Portil à moins d’une minute à pied, entre Séville et l’Algarve.</p>',
+            'hero_marker': 'Le parcours à pied. Jouer. Rentrer à la maison.',
+            'old_stat': '<div class="stat"><strong>Parcours local</strong><span>Golf Nuevo Portil</span></div>',
+            'stat': '<div class="stat"><strong>Moins d’1 minute</strong><span>accès officiel au golf à pied</span></div>',
+            'notice': '<div class="notice-box golf-access" style="margin-bottom:22px"><strong>Le golf au seuil de la maison.</strong> L’accès piéton officiel au Golf Nuevo Portil se trouve près de l’entrée résidentielle et se rejoint en moins d’une minute à pied. Les voyageurs utilisent cet accès officiel ; la petite porte privée en limite de propriété n’est pas une entrée voyageurs.</div>',
+            'question': '<details><summary>Peut-on rejoindre le Golf Nuevo Portil à pied ?</summary><p>Oui. L’accès piéton officiel est à moins d’une minute. L’entrée se fait par l’accès officiel du golf, et non par la petite porte privée en limite de propriété.</p></details>',
+            'faq_anchor': '<details><summary>Le golf est-il compris dans le prix ?</summary>',
+        },
+        'es': {
+            'title': 'Estancias de golf en Nuevo Portil | Atlantic Golf House at Villa Almale',
+            'desc': 'Casa privada de cinco dormitorios para 4–6 golfistas adultos en Nuevo Portil, con acceso oficial al Golf Nuevo Portil a menos de un minuto a pie, entre Sevilla y el Algarve.',
+            'old_hero': '<span class="eyebrow">Nuevo Portil · Costa de la Luz · primavera y otoño</span><h1>Semanas de golf atlántico. Una casa privada.</h1><p class="lead">Una villa de cinco dormitorios para 4–6 golfistas adultos — o grupos mixtos que buscan golf, costa y tiempo juntos — entre Sevilla y el Algarve.</p>',
+            'hero': '<span class="eyebrow">Atlantic Golf House at Villa Almale · Nuevo Portil</span><h1>Al campo a pie. Jugar. Volver a casa.</h1><p class="lead">Una casa privada de cinco dormitorios para 4–6 golfistas adultos — o grupos mixtos — con el acceso oficial al Golf Nuevo Portil a menos de un minuto a pie, entre Sevilla y el Algarve.</p>',
+            'hero_marker': 'Al campo a pie. Jugar. Volver a casa.',
+            'old_stat': '<div class="stat"><strong>Campo local</strong><span>Golf Nuevo Portil</span></div>',
+            'stat': '<div class="stat"><strong>Menos de 1 minuto</strong><span>acceso oficial al golf a pie</span></div>',
+            'notice': '<div class="notice-box golf-access" style="margin-bottom:22px"><strong>El golf a la puerta de casa.</strong> El acceso peatonal oficial al Golf Nuevo Portil está junto a la entrada residencial y se alcanza en menos de un minuto a pie. Los huéspedes utilizan este acceso oficial; la pequeña puerta privada en el límite de la parcela no es una entrada para viajeros.</div>',
+            'question': '<details><summary>¿Se puede ir andando al Golf Nuevo Portil?</summary><p>Sí. El acceso peatonal oficial está a menos de un minuto. La entrada se realiza por el acceso oficial del golf, no por la pequeña puerta privada en el límite de la parcela.</p></details>',
+            'faq_anchor': '<details><summary>¿El golf está incluido en el precio?</summary>',
+        },
+    }[lang]
+    text = set_title(text, cfg['title'])
+    for attr, key in [('name', 'description'), ('property', 'og:title'), ('property', 'og:description'), ('name', 'twitter:title'), ('name', 'twitter:description')]:
+        text = set_meta(text, attr, key, cfg['title'] if 'title' in key else cfg['desc'])
+    text = replace_or_assert(text, cfg['old_hero'], cfg['hero'], cfg['hero_marker'], f'{lang} golf hero')
+    text = replace_present(text, cfg['old_stat'], cfg['stat'])
+    if 'class="notice-box golf-access"' not in text:
+        if '<div class="course-grid">' not in text:
+            raise RuntimeError(f'{lang}: course grid missing')
+        text = text.replace('<div class="course-grid">', cfg['notice'] + '<div class="course-grid">', 1)
+    if cfg['question'] not in text:
+        if cfg['faq_anchor'] not in text:
+            raise RuntimeError(f'{lang}: FAQ anchor missing')
+        text = text.replace(cfg['faq_anchor'], cfg['question'] + cfg['faq_anchor'], 1)
+    return text
+
+
+def update_json_ld(text: str, lang: str) -> str:
+    count = 0
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            node_type = node.get('@type')
+            types = {node_type} if isinstance(node_type, str) else set(node_type or [])
+            if 'WebPage' in types:
+                node['dateModified'] = DATE
+            if 'Accommodation' in types:
+                amenities = node.setdefault('amenityFeature', [])
+                names = {x.get('name') for x in amenities if isinstance(x, dict)}
+                for name in ('Three portable air-conditioning units in selected rooms', 'Ceiling fans in two twin bedrooms', 'Official Golf Nuevo Portil pedestrian access under one minute away'):
+                    if name not in names:
+                        amenities.append({'@type': 'LocationFeatureSpecification', 'name': name, 'value': True})
+                same_as = node.setdefault('sameAs', [])
+                for url in (AIRBNB, VRBO):
+                    if url not in same_as:
+                        same_as.append(url)
+            if 'FAQPage' in types:
+                for q in node.get('mainEntity', []):
+                    if not isinstance(q, dict):
+                        continue
+                    name = str(q.get('name', '')).lower()
+                    if any(term in name for term in ('climatisation', 'air conditioning', 'aire acondicionado')):
+                        q.setdefault('acceptedAnswer', {'@type': 'Answer'})['text'] = AC[lang]
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    def repl(match: re.Match[str]) -> str:
+        nonlocal count
+        payload = json.loads(match.group(1).strip())
+        walk(payload)
+        count += 1
+        return '<script type="application/ld+json">' + json.dumps(payload, ensure_ascii=False, separators=(',', ':')) + '</script>'
+    text = re.sub(r'<script\b[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', repl, text, flags=re.I | re.S)
+    if count < 1:
+        raise RuntimeError('JSON-LD missing')
+    return text
+
+
+def ensure_home_performance(text: str) -> str:
+    if 'href="https://app.ownerrez.com"' not in text and "href='https://app.ownerrez.com'" not in text:
