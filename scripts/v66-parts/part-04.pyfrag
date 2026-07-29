@@ -1,0 +1,81 @@
+        text = text.replace('</head>', '<link rel="preconnect" href="https://app.ownerrez.com" crossorigin/></head>', 1)
+    pattern = r'<img\b(?=[^>]*\bsrc=["\'][^"\']*hero-villa-piscine-jardin(?:-1280)?\.webp["\'])[^>]*>'
+    match = re.search(pattern, text, flags=re.I)
+    if match:
+        tag = re.sub(r'\s+(?:srcset|sizes)=["\'][^"\']*["\']', '', match.group(0), flags=re.I)
+        tag = re.sub(r'\bsrc=["\'][^"\']*hero-villa-piscine-jardin(?:-1280)?\.webp["\']', f'src="{HERO_1280}"', tag, count=1, flags=re.I)
+        end = '/>' if tag.rstrip().endswith('/>') else '>'
+        core = tag.rstrip()[:-len(end)].rstrip()
+        srcset = f'{HERO_768} 768w, {HERO_1280} 1280w, {HERO} 1920w'
+        tag = f'{core} srcset="{srcset}" sizes="100vw"{end}'
+        text = text[:match.start()] + tag + text[match.end():]
+        preload = f'<link rel="preload" as="image" href="{HERO_1280}" imagesrcset="{srcset}" imagesizes="100vw" type="image/webp" fetchpriority="high"/>'
+        pp = r'<link\b(?=[^>]*\brel=["\']preload["\'])(?=[^>]*hero-villa-piscine-jardin[^>]*>)[^>]*>'
+        text = re.sub(pp, preload, text, count=1, flags=re.I) if re.search(pp, text, flags=re.I) else text.replace('</head>', preload + '</head>', 1)
+    return text
+
+
+def sitemap() -> str:
+    out = ['<?xml version="1.0" encoding="UTF-8"?>', '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">']
+    for data in PAGES.values():
+        out += ['  <url>', f'    <loc>{data["canonical"]}</loc>', f'    <lastmod>{DATE}</lastmod>']
+        for lang, href in data['alternates'].items():
+            out.append(f'    <xhtml:link rel="alternate" hreflang="{lang}" href="{href}"/>')
+        out.append('  </url>')
+    out.append('</urlset>')
+    return '\n'.join(out) + '\n'
+
+
+def validate(text: str, rel: str, data: dict[str, Any]) -> None:
+    if len(re.findall(r'<h1\b', text, flags=re.I)) != 1:
+        raise RuntimeError(f'{rel}: expected one H1')
+    for level in ('h2', 'h3'):
+        if re.search(rf'<{level}\b[^>]*>\s*</{level}>', text, flags=re.I | re.S):
+            raise RuntimeError(f'{rel}: empty {level}')
+    if data['canonical'] not in text:
+        raise RuntimeError(f'{rel}: canonical missing')
+    for lang, href in data['alternates'].items():
+        if f'hreflang="{lang}"' not in text or href not in text:
+            raise RuntimeError(f'{rel}: hreflang {lang} missing')
+    if DATE not in text or AC[data['lang']] not in text:
+        raise RuntimeError(f'{rel}: V6.6 date or climate text missing')
+    stale = ('one portable unit, two fans', '1 portable air conditioner, 2 fans', 'un climatiseur mobile, deux ventilateurs', '1 climatiseur mobile, 2 ventilateurs', 'un equipo portátil, dos ventiladores', 'un aparato portátil, dos ventiladores', 'un climatizador portátil, dos ventiladores', '1 climatizador portátil, 2 ventiladores')
+    if any(token in text.lower() for token in stale):
+        raise RuntimeError(f'{rel}: stale climate copy remains')
+    if data.get('home') and 'hero-villa-piscine-jardin-768.webp 768w' not in text:
+        raise RuntimeError(f'{rel}: responsive hero missing')
+    if rel.startswith('off-season/') or rel == 'off-season/index.html':
+        if 'Atlantic Golf House at Villa Almale' not in text:
+            raise RuntimeError(f'{rel}: golf product missing')
+        if not any(term in text.lower() for term in ('under one minute', 'moins d’une minute', 'menos de un minuto')):
+            raise RuntimeError(f'{rel}: official walk claim missing')
+        if not any(term in text.lower() for term in ('private gate', 'porte privée', 'puerta privada')):
+            raise RuntimeError(f'{rel}: private gate clarification missing')
+
+
+(ROOT / '.htaccess').write_text(HTACCESS, encoding='utf-8')
+(ROOT / 'robots.txt').write_text(ROBOTS, encoding='utf-8')
+(ROOT / 'sitemap.xml').write_text(sitemap(), encoding='utf-8')
+
+for rel, data in PAGES.items():
+    path = ROOT / rel
+    if not path.is_file():
+        raise RuntimeError(f'missing production page: {rel}')
+    text = path.read_text(encoding='utf-8')
+    if rel == 'index.html':
+        text = fill_empty_french_data(text)
+    text = patch_ac(text)
+    if data.get('home'):
+        text = patch_home(text, data['lang'])
+        text = ensure_home_performance(text)
+    elif rel.startswith('off-season/') or rel == 'off-season/index.html':
+        text = patch_offseason(text, data['lang'])
+    else:
+        text = patch_target(text, data['lang'])
+    text = update_json_ld(text, data['lang'])
+    validate(text, rel, data)
+    path.write_text(text, encoding='utf-8')
+
+if (ROOT / 'sitemap.xml').read_text(encoding='utf-8').count('<loc>') != 9:
+    raise RuntimeError('sitemap must contain exactly nine URLs')
+print('Villa Almale V6.6 golf, comfort and SEO update validated successfully.')
