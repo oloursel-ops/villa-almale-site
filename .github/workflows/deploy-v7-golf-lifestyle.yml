@@ -1,0 +1,303 @@
+name: Deploy Villa Almale V7 golf lifestyle
+run-name: Deploy and verify Villa Almale V7 — golf, Atlantic life and practical links
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-golf-lifestyle.yml
+      - scripts/v70-parts/**
+      - releases/v7.0/README.md
+
+concurrency:
+  group: villa-almale-v7-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, deploy, verify and preserve V7
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate target and install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          cat scripts/v70-parts/part-*.pyfrag > deploy-v7-golf-lifestyle.py
+          python3 -m py_compile deploy-v7-golf-lifestyle.py
+
+      - name: Define targeted production files
+        shell: bash
+        run: |
+          cat > manifest.txt <<'MANIFEST'
+          sitemap.xml
+          index.html
+          en/index.html
+          es/index.html
+          villa-nuevo-portil/index.html
+          en/holiday-villa-nuevo-portil/index.html
+          es/alquiler-vacacional-nuevo-portil/index.html
+          off-season/index.html
+          off-season/fr/index.html
+          off-season/es/index.html
+          MANIFEST
+          test "$(grep -cve '^$' manifest.txt)" -eq 10
+
+      - name: Download and archive current production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live before
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "live/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -a live/. before/
+          while IFS= read -r file; do test -s "before/$file"; done < manifest.txt
+          tar -czf "villa-almale-before-v7-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 deploy-v7-golf-lifestyle.py live 2>&1 | tee v7-update.log
+          grep -q 'Play golf. Live Andalusia.' live/off-season/index.html
+          grep -q 'Jouer au golf. Vivre l’Andalousie.' live/off-season/fr/index.html
+          grep -q 'Jugar al golf. Vivir Andalucía.' live/off-season/es/index.html
+          grep -q 'https://taximarrompido.com/contacto' live/off-season/index.html
+          grep -q 'https://open.teeone.golf/en/golfnuevoportil/disponibilidad' live/off-season/index.html
+          grep -q 'https://open.imaster.golf/en/rompido/disponibilidad' live/off-season/index.html
+          grep -q 'https://open.teeone.golf/en/islantilla/disponibilidad' live/off-season/index.html
+          grep -q 'https://www.islacanela.es/en/golf' live/off-season/index.html
+          test "$(grep -c '<loc>' live/sitemap.xml)" -eq 9
+          test "$(grep -c '<lastmod>2026-08-02</lastmod>' live/sitemap.xml)" -eq 9
+
+      - name: Upload only targeted production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > upload-v7.lftp
+          lftp -f upload-v7.lftp 2>&1 | tee upload-v7.log
+
+      - name: Compare remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "after/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "after/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          while IFS= read -r file; do cmp "live/$file" "after/$file"; done < manifest.txt
+          tar -czf "villa-almale-after-v7-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public pages and live booking routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          fetch_until() {
+            local url="$1" marker="$2" output="$3"
+            local attempt
+            for attempt in $(seq 1 18); do
+              if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?v7check=${GITHUB_RUN_ID}-${attempt}" -o "$output" && grep -Fq "$marker" "$output"; then
+                printf '%s verified on attempt %s\n' "$url" "$attempt" | tee -a public-verification.log
+                return 0
+              fi
+              sleep 5
+            done
+            echo "Timed out waiting for $marker at $url" >&2
+            return 1
+          }
+
+          : > public-verification.log
+          fetch_until 'https://villanuevoportil.com/off-season/' 'Play golf. Live Andalusia.' public-golf-en.html
+          fetch_until 'https://villanuevoportil.com/off-season/fr/' 'Jouer au golf. Vivre l’Andalousie.' public-golf-fr.html
+          fetch_until 'https://villanuevoportil.com/off-season/es/' 'Jugar al golf. Vivir Andalucía.' public-golf-es.html
+          fetch_until 'https://villanuevoportil.com/' '10 voyageurs' public-fr.html
+          fetch_until 'https://villanuevoportil.com/en/' '10 guests' public-en.html
+          fetch_until 'https://villanuevoportil.com/es/' '10 huéspedes' public-es.html
+          fetch_until 'https://villanuevoportil.com/villa-nuevo-portil/' '10 voyageurs' public-target-fr.html
+          fetch_until 'https://villanuevoportil.com/en/holiday-villa-nuevo-portil/' '10 guests' public-target-en.html
+          fetch_until 'https://villanuevoportil.com/es/alquiler-vacacional-nuevo-portil/' '10 huéspedes' public-target-es.html
+
+          curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/sitemap.xml?v7check=${GITHUB_RUN_ID}" -o public-sitemap.xml
+          test "$(grep -c '<loc>' public-sitemap.xml)" -eq 9
+          test "$(grep -c '<lastmod>2026-08-02</lastmod>' public-sitemap.xml)" -eq 9
+
+          grep -Fq 'https://taximarrompido.com/contacto' public-golf-en.html
+          grep -Fq 'https://open.teeone.golf/en/golfnuevoportil/disponibilidad' public-golf-en.html
+          grep -Fq 'https://open.imaster.golf/en/rompido/disponibilidad' public-golf-en.html
+          grep -Fq 'https://open.teeone.golf/en/islantilla/disponibilidad' public-golf-en.html
+          grep -Fq 'https://www.islacanela.es/en/golf' public-golf-en.html
+          grep -Fq 'working wood-burning fireplace insert' public-golf-en.html
+          grep -Fq 'Garage sécurisé' public-golf-fr.html
+          grep -Fq 'Garaje seguro' public-golf-es.html
+
+          for route in \
+            'https://villanuevoportil.com/reservation.html' \
+            'https://villanuevoportil.com/en/reservation.html' \
+            'https://villanuevoportil.com/es/reservation.html'; do
+            code="$(curl --retry 3 --retry-delay 2 -sS -o /dev/null -w '%{http_code}' "$route")"
+            case "$code" in 200|301|302|303|307|308) ;; *) echo "$route returned $code" >&2; exit 1;; esac
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          pages = {
+              'public-golf-en.html': ('https://villanuevoportil.com/off-season/', 'Play golf. Live Andalusia.'),
+              'public-golf-fr.html': ('https://villanuevoportil.com/off-season/fr/', 'Jouer au golf. Vivre l’Andalousie.'),
+              'public-golf-es.html': ('https://villanuevoportil.com/off-season/es/', 'Jugar al golf. Vivir Andalucía.'),
+          }
+          for name, (canonical_url, h1_text) in pages.items():
+              text = Path(name).read_text(encoding='utf-8')
+              soup = BeautifulSoup(text, 'html.parser')
+              assert len(soup.find_all('h1')) == 1, name
+              assert soup.h1.get_text(' ', strip=True) == h1_text, name
+              canonical = soup.find('link', rel='canonical')
+              assert canonical and canonical.get('href') == canonical_url, name
+              assert soup.find('a', href='https://taximarrompido.com/contacto'), name
+              assert len(soup.select('#golf .course-card')) == 4, name
+              assert all(h.get_text(' ', strip=True) for h in soup.find_all(['h2', 'h3'])), name
+              json_blocks = soup.find_all('script', attrs={'type': 'application/ld+json'})
+              assert json_blocks, name
+              payloads = [json.loads(b.string or b.get_text()) for b in json_blocks]
+              serialised = json.dumps(payloads, ensure_ascii=False)
+              assert 'FAQPage' in serialised, name
+              assert '"value": 10' in serialised, name
+              assert 'Secure garage storage for golf bags' in serialised, name
+          print('Public V7 HTML, JSON-LD, booking routes and practical links validated.')
+          PY
+
+      - name: Restore targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -d before ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "before/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve pre-deployment backup
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-before-v7-${{ github.run_id }}
+          path: villa-almale-before-v7-${{ github.run_id }}.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Preserve verified V7 artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v7-verified-${{ github.run_id }}
+          path: |
+            villa-almale-after-v7-${{ github.run_id }}.tar.gz
+            v7-update.log
+            public-verification.log
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale V7 golf lifestyle — ${status}`;
+            const chunks = [];
+            for (const file of ['v7-update.log', 'public-verification.log', 'upload-v7.log', 'rollback.log']) {
+              if (fs.existsSync(file)) chunks.push(`${file}:\n${fs.readFileSync(file, 'utf8').slice(-7000)}`);
+            }
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              status === 'success'
+                ? 'V7 was backed up, deployed, compared byte for byte and verified publicly. The three golf pages, capacity 10, fireplace and garage copy, official green-fee links, independent transfer link and booking routes all passed.'
+                : `Failure diagnostic:\n\n\`\`\`text\n${chunks.join('\n\n') || 'No diagnostic file.'}\n\`\`\``
+            ].join('\n\n');
+            await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body});
+
+      - name: Job summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          echo '### Villa Almale V7 — golf lifestyle' >> "$GITHUB_STEP_SUMMARY"
+          echo "Status: **${{ job.status }}**" >> "$GITHUB_STEP_SUMMARY"
+          echo 'Targeted backup, byte comparison, public verification and automatic rollback are included.' >> "$GITHUB_STEP_SUMMARY"
