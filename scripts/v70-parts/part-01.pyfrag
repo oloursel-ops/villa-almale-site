@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import sys
+from pathlib import Path
+from typing import Any
+
+from bs4 import BeautifulSoup
+
+ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('/mnt/data/villa_v7/site')
+DATE = '2026-08-02'
+
+BOOKING = {
+    'en': '/en/reservation.html',
+    'fr': '/reservation.html',
+    'es': '/es/reservation.html',
+}
+HOME = {'en': '/en/', 'fr': '/', 'es': '/es/'}
+TARGET = {
+    'en': '/en/holiday-villa-nuevo-portil/',
+    'fr': '/villa-nuevo-portil/',
+    'es': '/es/alquiler-vacacional-nuevo-portil/',
+}
+
+LINKS = {
+    'nuevo_book': 'https://open.teeone.golf/en/golfnuevoportil/disponibilidad',
+    'nuevo_rates': 'https://www.golfnuevoportil.com/rates/',
+    'rompido_book': 'https://open.imaster.golf/en/rompido/disponibilidad',
+    'rompido_rates': 'https://www.golfelrompido.es/en/golf-rates/',
+    'islantilla_book': 'https://open.teeone.golf/en/islantilla/disponibilidad',
+    'islantilla_info': 'https://www.islantillagolfresort.com/en/golf',
+    'isla_canela': 'https://www.islacanela.es/en/golf',
+    'transfer': 'https://taximarrompido.com/contacto',
+}
+
+META = {
+    'en': {
+        'title': 'Golf holidays Costa de la Luz | Villa Almale',
+        'description': 'Private five-bedroom villa near Golf Nuevo Portil for golf groups and mixed stays, with fireplace, secure golf storage, pool and direct booking.',
+        'og_locale': 'en_GB',
+        'page_name': 'Play golf. Live Andalusia. | Atlantic Golf House at Villa Almale',
+        'page_desc': 'A private five-bedroom base near Golf Nuevo Portil for golf, Atlantic days, shared meals and Andalusian evenings.',
+        'breadcrumb': 'Golf holidays on the Costa de la Luz',
+    },
+    'fr': {
+        'title': 'Séjour golf à Nuevo Portil | Villa Almale',
+        'description': 'Villa privée de cinq chambres près du Golf Nuevo Portil pour groupes de golfeurs et séjours mixtes, avec cheminée, garage sécurisé, piscine et réservation directe.',
+        'og_locale': 'fr_FR',
+        'page_name': 'Jouer au golf. Vivre l’Andalousie. | Atlantic Golf House at Villa Almale',
+        'page_desc': 'Une base privée de cinq chambres près du Golf Nuevo Portil, entre golf, Atlantique, grandes tablées et soirées andalouses.',
+        'breadcrumb': 'Séjours golf sur la Costa de la Luz',
+    },
+    'es': {
+        'title': 'Vacaciones de golf en Nuevo Portil | Villa Almale',
+        'description': 'Villa privada de cinco dormitorios junto al Golf Nuevo Portil para grupos de golf y estancias mixtas, con chimenea, garaje seguro, piscina y reserva directa.',
+        'og_locale': 'es_ES',
+        'page_name': 'Jugar al golf. Vivir Andalucía. | Atlantic Golf House at Villa Almale',
+        'page_desc': 'Una base privada de cinco dormitorios junto al Golf Nuevo Portil para golf, Atlántico, sobremesas y noches andaluzas.',
+        'breadcrumb': 'Vacaciones de golf en la Costa de la Luz',
+    },
+}
+
+FAQ = {
+    'en': [
+        ('Can we walk to Golf Nuevo Portil?', 'Yes. The official pedestrian access is under one minute away on foot. Guests use the official golf entrance, not the small private gate on the property boundary.'),
+        ('Are green fees included?', 'No. Villa Almale provides accommodation only. Tee times, green fees, buggies and club hire are booked and paid directly with each golf provider through the links shown on this page.'),
+        ('What group size works best?', 'The golf product is designed mainly for 4–6 adult golfers or mixed groups. The licensed house capacity is up to 10 guests, with no more than six adults.'),
+        ('Can airport and golf transfers be arranged?', 'Yes, through an independent local transfer operator. Quotes, availability, terms and payment are agreed directly with that provider.'),
+        ('Do we need a car?', 'A car remains the most flexible option for a multi-course week. A private transfer can cover Faro or Seville airport and local golf journeys if booked separately.'),
+        ('Is the fireplace available?', 'Yes. The living room has a working wood-burning insert and firewood is stored in the garage. It is an atmospheric complement, not whole-house heating; guests must follow the safety instructions provided.'),
+        ('Can we book a short off-season stay?', 'Selected off-season dates are available from four nights. The live booking page shows the applicable minimum stay and availability for each period.'),
+    ],
+    'fr': [
+        ('Peut-on rejoindre le Golf Nuevo Portil à pied ?', 'Oui. L’accès piéton officiel est à moins d’une minute. Les voyageurs utilisent l’entrée officielle du golf, et non la petite porte privée en limite de propriété.'),
+        ('Les green-fees sont-ils compris ?', 'Non. Villa Almale fournit uniquement l’hébergement. Les départs, green-fees, buggies et locations de clubs sont réservés et réglés directement auprès de chaque golf via les liens de cette page.'),
+        ('Quelle taille de groupe convient le mieux ?', 'Le produit golf vise surtout 4 à 6 golfeurs adultes ou des groupes mixtes. La capacité autorisée de la maison est de 10 voyageurs maximum, dont six adultes au plus.'),
+        ('Peut-on organiser les transferts aéroport et golf ?', 'Oui, auprès d’un opérateur local indépendant. Le devis, les disponibilités, les conditions et le règlement sont convenus directement avec ce prestataire.'),
+        ('Faut-il une voiture ?', 'La voiture reste la solution la plus souple pour jouer plusieurs parcours. Un transfert privé peut prendre en charge Faro ou Séville et les trajets vers les golfs s’il est réservé séparément.'),
+        ('La cheminée est-elle utilisable ?', 'Oui. Le salon dispose d’un insert à bois fonctionnel et du bois est stocké dans le garage. C’est un complément d’ambiance et non un chauffage de toute la maison ; les consignes de sécurité doivent être respectées.'),
+        ('Peut-on réserver un court séjour hors saison ?', 'Certaines dates hors saison sont proposées dès quatre nuits. La page de réservation affiche le minimum applicable et les disponibilités de chaque période.'),
+    ],
+    'es': [
+        ('¿Se puede ir andando al Golf Nuevo Portil?', 'Sí. El acceso peatonal oficial está a menos de un minuto. Los huéspedes utilizan la entrada oficial del golf, no la pequeña puerta privada en el límite de la parcela.'),
+        ('¿Los green fees están incluidos?', 'No. Villa Almale ofrece únicamente el alojamiento. Las salidas, green fees, buggies y alquiler de palos se reservan y pagan directamente a cada campo mediante los enlaces de esta página.'),
+        ('¿Qué tamaño de grupo funciona mejor?', 'El producto de golf está pensado sobre todo para 4–6 golfistas adultos o grupos mixtos. La capacidad autorizada de la casa es de hasta 10 huéspedes, con un máximo de seis adultos.'),
+        ('¿Se pueden organizar traslados al aeropuerto y a los campos?', 'Sí, mediante un operador local independiente. El presupuesto, la disponibilidad, las condiciones y el pago se acuerdan directamente con ese proveedor.'),
+        ('¿Necesitamos coche?', 'El coche sigue siendo la opción más flexible para jugar en varios campos. También se puede contratar por separado un traslado privado desde Faro o Sevilla y para los recorridos de golf.'),
+        ('¿Se puede utilizar la chimenea?', 'Sí. El salón dispone de un insert de leña en funcionamiento y hay leña guardada en el garaje. Es un complemento de ambiente, no calefacción integral; deben respetarse las instrucciones de seguridad.'),
+        ('¿Podemos reservar una estancia corta fuera de temporada?', 'Algunas fechas fuera de temporada están disponibles desde cuatro noches. La página de reserva muestra la estancia mínima y la disponibilidad aplicables a cada periodo.'),
+    ],
+}
+
+
+def ext_link(url: str, text: str, event: str = 'golf_club_click') -> str:
+    return f'<a data-analytics-event="{event}" href="{url}" rel="noopener noreferrer nofollow" target="_blank">{text}</a>'
+
+
+def main_en() -> str:
+    return f'''<main>
+<section class="hero hero-season"><div class="shell"><div class="hero-content"><span class="eyebrow">Private golf holidays on Spain’s Atlantic coast</span><h1>Play golf. Live Andalusia.</h1><p class="lead">A private five-bedroom home for groups who want more than a round of golf: official access to Golf Nuevo Portil is under one minute away on foot, with the Atlantic coast, El Rompido and the eastern Algarve within easy reach.</p><div class="hero-actions"><a class="button primary" data-analytics-event="booking_click" href="{BOOKING['en']}">Check dates and prices →</a><a class="button outline-light" href="{HOME['en']}">See the main villa site</a></div></div></div><div class="hero-facts"><div class="hero-fact"><strong>5</strong><span>bedrooms</span></div><div class="hero-fact"><strong>10</strong><span>guests maximum</span></div><div class="hero-fact"><strong>6</strong><span>adults maximum</span></div><div class="hero-fact"><strong>Private</strong><span>fenced pool</span></div></div></section>
+<section class="stat-strip"><div class="shell stats"><div class="stat"><strong>Under 1 minute</strong><span>official golf access on foot</span></div><div class="stat"><strong>From 4 nights</strong><span>on selected off-season dates</span></div><div class=
