@@ -1,0 +1,228 @@
+name: Deploy Villa Almale V7.2 location visual
+run-name: Deploy and verify Villa Almale V7.2 — location and golf infographic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-2-location-visual.yml
+      - scripts/v72-add-location-visual.py
+      - assets/v7.2-site-location/**
+
+concurrency:
+  group: villa-almale-v7-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, deploy and verify V7.2 location visual
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+      IMAGE_REL: assets/images/current/villa-almale-location-golf-v7-2.webp
+      IMAGE_SHA: 440a1f7f5d70a3e9ad14ebc74ba087db2174d950e6ef18b4660bdacc7fe4eeaa
+      IMAGE_SIZE: 44492
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install tools and reconstruct visual
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v72-add-location-visual.py
+          mkdir -p build/assets/images/current
+          cat assets/v7.2-site-location/part-*.b64 | tr -d '\r\n' | base64 -d > "build/$IMAGE_REL"
+          test "$(stat -c '%s' "build/$IMAGE_REL")" -eq "$IMAGE_SIZE"
+          echo "$IMAGE_SHA  build/$IMAGE_REL" | sha256sum -c -
+
+      - name: Download and back up current English golf page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season before/off-season
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" 'live/off-season/index.html'
+            echo 'bye'
+          } > download-before-v72.lftp
+          lftp -f download-before-v72.lftp
+          cp live/off-season/index.html before/off-season/index.html
+          test -s before/off-season/index.html
+          tar -czf "villa-almale-before-v72-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Patch and validate English golf page
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v72-add-location-visual.py live 2>&1 | tee v72-update.log
+          grep -Fq 'Location at a glance' live/off-season/index.html
+          grep -Fq '/assets/images/current/villa-almale-location-golf-v7-2.webp' live/off-season/index.html
+          mkdir -p live/assets/images/current
+          cp "build/$IMAGE_REL" "live/$IMAGE_REL"
+          echo "$IMAGE_SHA  live/$IMAGE_REL" | sha256sum -c -
+
+      - name: Upload page and visual
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" 'live/off-season/index.html'
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/assets/images/current" "live/$IMAGE_REL"
+            echo 'bye'
+          } > upload-v72.lftp
+          lftp -f upload-v72.lftp 2>&1 | tee upload-v72.log
+
+      - name: Compare remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season after/assets/images/current
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" 'after/off-season/index.html'
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/$IMAGE_REL" "after/$IMAGE_REL"
+            echo 'bye'
+          } > download-after-v72.lftp
+          lftp -f download-after-v72.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          cmp "live/$IMAGE_REL" "after/$IMAGE_REL"
+          echo "$IMAGE_SHA  after/$IMAGE_REL" | sha256sum -c -
+          tar -czf "villa-almale-after-v72-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public page and image
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import time
+          import urllib.request
+          from bs4 import BeautifulSoup
+
+          page_url = 'https://villanuevoportil.com/off-season/'
+          image_url = 'https://villanuevoportil.com/assets/images/current/villa-almale-location-golf-v7-2.webp'
+          expected_sha = '440a1f7f5d70a3e9ad14ebc74ba087db2174d950e6ef18b4660bdacc7fe4eeaa'
+          expected_size = 44492
+
+          html = None
+          for attempt in range(18):
+              req = urllib.request.Request(f'{page_url}?v72={attempt}', headers={'Cache-Control': 'no-cache', 'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  candidate = response.read().decode('utf-8')
+              if 'Location at a glance' in candidate and '/assets/images/current/villa-almale-location-golf-v7-2.webp' in candidate:
+                  html = candidate
+                  break
+              time.sleep(5)
+          if html is None:
+              raise RuntimeError('The updated English golf page did not become publicly visible')
+
+          soup = BeautifulSoup(html, 'html.parser')
+          section = soup.select_one('#location-at-a-glance')
+          assert section is not None
+          assert len(soup.select('#location-at-a-glance')) == 1
+          image = section.find('img', src='/assets/images/current/villa-almale-location-golf-v7-2.webp')
+          assert image is not None
+          assert image.get('width') == '900' and image.get('height') == '507'
+          assert image.get('loading') == 'lazy' and image.get('decoding') == 'async'
+          assert soup.find('style', id='v72-location-visual-style') is not None
+          assert len(soup.find_all('h1')) == 1
+          assert all(h.get_text(' ', strip=True) for h in soup.find_all(['h2', 'h3']))
+          for anchor in soup.find_all('a', href=True):
+              assert anchor.get('target') == '_blank', anchor.get('href')
+              rel = set(anchor.get('rel', []))
+              assert {'noopener', 'noreferrer'}.issubset(rel), (anchor.get('href'), rel)
+          for block in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+              json.loads(block.string or block.get_text())
+
+          req = urllib.request.Request(f'{image_url}?v72=1', headers={'Cache-Control': 'no-cache', 'User-Agent': 'Mozilla/5.0'})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              assert response.status == 200
+              assert response.headers.get_content_type() == 'image/webp'
+              data = response.read()
+          assert len(data) == expected_size, len(data)
+          assert hashlib.sha256(data).hexdigest() == expected_sha
+          print('Public V7.2 location section, image, structured data and link behaviour verified.')
+          PY
+
+      - name: Restore page and remove new visual on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ]; then exit 0; fi
+          {
+            echo 'set cmd:fail-exit no;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" 'before/off-season/index.html'
+            printf 'rm %q;\n' "$DEPLOY_PATH/$IMAGE_REL"
+            echo 'bye'
+          } > rollback-v72.lftp
+          lftp -f rollback-v72.lftp > rollback-v72.log 2>&1
+          status=$?
+          cat rollback-v72.log
+          exit "$status"
+
+      - name: Preserve deployment artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v72-${{ github.run_id }}
+          path: |
+            villa-almale-before-v72-${{ github.run_id }}.tar.gz
+            villa-almale-after-v72-${{ github.run_id }}.tar.gz
+            v72-update.log
+            upload-v72.log
+            rollback-v72.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale V7.2 location visual — ${status}`;
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              status === 'success'
+                ? 'The approved location and golf infographic was added to the English off-season page, the image and HTML matched the remote files byte for byte, and public verification passed.'
+                : 'The deployment failed; the English golf page was restored and the new visual was removed from production.'
+            ].join('\n\n');
+            await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body});
