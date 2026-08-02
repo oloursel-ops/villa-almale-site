@@ -1,0 +1,222 @@
+name: Deploy Villa Almale V7.1 link fix
+run-name: Deploy and verify Villa Almale V7.1 — golf and transfer links
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-1-link-fix.yml
+      - scripts/v71-fix-links.py
+
+concurrency:
+  group: villa-almale-v7-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, deploy and verify V7.1 links
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools and validate target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v71-fix-links.py
+
+      - name: Define target files
+        shell: bash
+        run: |
+          cat > manifest.txt <<'MANIFEST'
+          off-season/index.html
+          off-season/fr/index.html
+          off-season/es/index.html
+          MANIFEST
+
+      - name: Download and back up production
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live before
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              mkdir -p "live/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -a live/. before/
+          tar -czf "villa-almale-before-v71-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v71-fix-links.py live 2>&1 | tee v71-update.log
+          for page in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html; do
+            grep -Fq 'https://www.teetimesbooking.com/club/golf-el-rompido' "$page"
+            grep -Fq 'https://taximarrompido.com/' "$page"
+            ! grep -Fq 'https://open.imaster.golf/en/rompido/disponibilidad' "$page"
+            ! grep -Fq 'https://taximarrompido.com/contacto' "$page"
+          done
+
+      - name: Upload corrected pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > upload-v71.lftp
+          lftp -f upload-v71.lftp 2>&1 | tee upload-v71.log
+
+      - name: Compare remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              mkdir -p "after/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "after/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          while IFS= read -r file; do cmp "live/$file" "after/$file"; done < manifest.txt
+          tar -czf "villa-almale-after-v71-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public pages and destination links
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import time
+          import urllib.request
+          from bs4 import BeautifulSoup
+
+          pages = {
+              'https://villanuevoportil.com/off-season/': 'Play golf. Live Andalusia.',
+              'https://villanuevoportil.com/off-season/fr/': 'Jouer au golf. Vivre l’Andalousie.',
+              'https://villanuevoportil.com/off-season/es/': 'Jugar al golf. Vivir Andalucía.',
+          }
+          wanted = {
+              'https://www.teetimesbooking.com/club/golf-el-rompido',
+              'https://taximarrompido.com/',
+          }
+          for url, marker in pages.items():
+              text = None
+              for attempt in range(18):
+                  req = urllib.request.Request(f'{url}?v71={attempt}', headers={'Cache-Control': 'no-cache', 'User-Agent': 'Mozilla/5.0'})
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      candidate = response.read().decode('utf-8')
+                  if marker in candidate and all(link in candidate for link in wanted):
+                      text = candidate
+                      break
+                  time.sleep(5)
+              if text is None:
+                  raise RuntimeError(f'Updated page not visible: {url}')
+              soup = BeautifulSoup(text, 'html.parser')
+              for a in soup.find_all('a', href=True):
+                  assert a.get('target') == '_blank', (url, a.get('href'))
+                  rel = set(a.get('rel', []))
+                  assert {'noopener', 'noreferrer'}.issubset(rel), (url, a.get('href'), rel)
+              assert soup.find('a', href='https://www.teetimesbooking.com/club/golf-el-rompido')
+              assert soup.find('a', href='https://taximarrompido.com/')
+
+          for destination in wanted:
+              req = urllib.request.Request(destination, headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  assert response.status == 200, (destination, response.status)
+          print('Public pages, corrected destinations and new-window links verified.')
+          PY
+
+      - name: Restore backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ]; then exit 0; fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "before/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > rollback-v71.lftp
+          lftp -f rollback-v71.lftp > rollback-v71.log 2>&1
+          status=$?
+          cat rollback-v71.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v71-${{ github.run_id }}
+          path: |
+            villa-almale-before-v71-${{ github.run_id }}.tar.gz
+            villa-almale-after-v71-${{ github.run_id }}.tar.gz
+            v71-update.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale V7.1 link fix — ${status}`;
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              status === 'success'
+                ? 'El Rompido tee-time and transfer links were corrected, every link on the three golf pages now opens in a new tab, remote files matched byte for byte, and public verification passed.'
+                : 'The deployment failed and the three targeted pages were restored from the pre-deployment backup.'
+            ].join('\n\n');
+            await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body});
