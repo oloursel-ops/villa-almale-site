@@ -1,0 +1,3 @@
+Redeployment trigger for Villa Almale V7.2 location visual.
+Requested after the public page appeared not to reflect the successful deployment.
+The workflow must rebuild the verified WebP, back up the current production page, upload the English golf page and image, compare both remote files byte for byte, and verify the public result.
