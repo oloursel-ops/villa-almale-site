@@ -172,7 +172,7 @@ jobs:
           fetch_until 'https://villanuevoportil.com/en/holiday-villa-nuevo-portil/' '10 guests' public-target-en.html
           fetch_until 'https://villanuevoportil.com/es/alquiler-vacacional-nuevo-portil/' '10 huéspedes' public-target-es.html
 
-          curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/sitemap.xml?v7check=${GITHUB_RUN_ID}" -o public-sitemap.xml
+          fetch_until 'https://villanuevoportil.com/sitemap.xml' '<lastmod>2026-08-02</lastmod>' public-sitemap.xml
           test "$(grep -c '<loc>' public-sitemap.xml)" -eq 9
           test "$(grep -c '<lastmod>2026-08-02</lastmod>' public-sitemap.xml)" -eq 9
 
@@ -181,7 +181,7 @@ jobs:
           grep -Fq 'https://open.imaster.golf/en/rompido/disponibilidad' public-golf-en.html
           grep -Fq 'https://open.teeone.golf/en/islantilla/disponibilidad' public-golf-en.html
           grep -Fq 'https://www.islacanela.es/en/golf' public-golf-en.html
-          grep -Fq 'working wood-burning fireplace insert' public-golf-en.html
+          grep -Fiq 'working wood-burning fireplace insert' public-golf-en.html
           grep -Fq 'Garage sécurisé' public-golf-fr.html
           grep -Fq 'Garaje seguro' public-golf-es.html
 
