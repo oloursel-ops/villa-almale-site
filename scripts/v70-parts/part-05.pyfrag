@@ -1,0 +1,209 @@
+on["\'][^>]*>)(.*?)(</script>)', re.I | re.S)
+    count = 0
+    def repl(m: re.Match[str]) -> str:
+        nonlocal count
+        payload = json.loads(m.group(2).strip())
+        callback(payload)
+        count += 1
+        return m.group(1) + json.dumps(payload, ensure_ascii=False, separators=(',', ':')) + m.group(3)
+    out = pattern.sub(repl, text)
+    if count == 0:
+        raise RuntimeError('No JSON-LD block found')
+    return out
+
+
+def walk_update(node: Any, lang: str | None = None, off_season: bool = False) -> None:
+    if isinstance(node, dict):
+        typ = node.get('@type')
+        types = {typ} if isinstance(typ, str) else set(typ or [])
+        if 'Accommodation' in types:
+            occ = node.get('occupancy')
+            if isinstance(occ, dict):
+                occ['value'] = 10
+            if off_season:
+                node['description'] = META[lang]['page_desc']
+                amenities = node.setdefault('amenityFeature', [])
+                names = {a.get('name') for a in amenities if isinstance(a, dict)}
+                additions = [
+                    'Secure garage storage for golf bags, trolleys and bicycles',
+                    'Working wood-burning fireplace insert in the living room',
+                    'Indoor and outdoor dining tables for ten guests',
+                ]
+                for name in additions:
+                    if name not in names:
+                        amenities.append({'@type': 'LocationFeatureSpecification', 'name': name, 'value': True})
+        if 'WebPage' in types:
+            node['dateModified'] = DATE
+            if off_season:
+                node['name'] = META[lang]['page_name']
+                node['description'] = META[lang]['page_desc']
+        if 'BreadcrumbList' in types and off_season:
+            items = node.get('itemListElement', [])
+            if items and isinstance(items[-1], dict):
+                items[-1]['name'] = META[lang]['breadcrumb']
+        for value in list(node.values()):
+            walk_update(value, lang, off_season)
+    elif isinstance(node, list):
+        for value in node:
+            walk_update(value, lang, off_season)
+
+
+def update_offseason_json(payload: Any, lang: str) -> None:
+    walk_update(payload, lang, True)
+    if not isinstance(payload, dict):
+        return
+    graph = payload.get('@graph')
+    if not isinstance(graph, list):
+        return
+    canonical = {'en': 'https://villanuevoportil.com/off-season/', 'fr': 'https://villanuevoportil.com/off-season/fr/', 'es': 'https://villanuevoportil.com/off-season/es/'}[lang]
+    faq_id = canonical + '#faq'
+    faq_node = {
+        '@type': 'FAQPage',
+        '@id': faq_id,
+        'mainEntity': [
+            {'@type': 'Question', 'name': q, 'acceptedAnswer': {'@type': 'Answer', 'text': a}}
+            for q, a in FAQ[lang]
+        ],
+    }
+    graph[:] = [n for n in graph if not (isinstance(n, dict) and n.get('@type') == 'FAQPage')]
+    graph.append(faq_node)
+
+
+def set_meta(soup: BeautifulSoup, key: str, value: str, attr: str = 'name') -> None:
+    tag = soup.find('meta', attrs={attr: key})
+    if tag is None:
+        raise RuntimeError(f'Missing meta {attr}={key}')
+    tag['content'] = value
+
+
+def patch_offseason(path: Path, lang: str) -> None:
+    text = path.read_text(encoding='utf-8')
+    soup = BeautifulSoup(text, 'html.parser')
+    soup.title.string = META[lang]['title']
+    set_meta(soup, 'description', META[lang]['description'])
+    set_meta(soup, 'twitter:title', META[lang]['title'])
+    set_meta(soup, 'twitter:description', META[lang]['description'])
+    set_meta(soup, 'og:title', META[lang]['title'], 'property')
+    set_meta(soup, 'og:description', META[lang]['description'], 'property')
+    old_main = soup.find('main')
+    if old_main is None:
+        raise RuntimeError(f'{path}: main missing')
+    new_html = {'en': main_en, 'fr': main_fr, 'es': main_es}[lang]()
+    new_main = BeautifulSoup(new_html, 'html.parser').find('main')
+    old_main.replace_with(new_main)
+    # Refresh footer proposition without changing its structure.
+    footer_p = soup.select_one('.footer-grid > div:first-child p')
+    if footer_p:
+        footer_p.string = {
+            'en': 'A private five-bedroom villa in Nuevo Portil for golf, Atlantic days and shared Andalusian evenings.',
+            'fr': 'Une villa privée de cinq chambres à Nuevo Portil, entre golf, Atlantique et soirées andalouses partagées.',
+            'es': 'Una villa privada de cinco dormitorios en Nuevo Portil para golf, Atlántico y noches andaluzas compartidas.',
+        }[lang]
+    out = str(soup)
+    out = parse_json_blocks(out, lambda payload: update_offseason_json(payload, lang))
+    path.write_text('<!DOCTYPE html>\n' + out.split('<!DOCTYPE html>', 1)[-1].lstrip(), encoding='utf-8')
+
+
+TEXT_REPLACEMENTS = [
+    ('up to 9 guests', 'up to 10 guests'),
+    ('Up to 9 guests', 'Up to 10 guests'),
+    ('9 guests, maximum 6 adults', '10 guests, maximum 6 adults'),
+    ('nine guests', '10 guests'),
+    ('Nine guests', '10 guests'),
+    ('9 voyageurs', '10 voyageurs'),
+    ('neuf voyageurs', '10 voyageurs'),
+    ('Neuf voyageurs', '10 voyageurs'),
+    ('Jusqu’à neuf voyageurs', 'Jusqu’à 10 voyageurs'),
+    ('jusqu’à neuf voyageurs', 'jusqu’à 10 voyageurs'),
+    ('9 huéspedes', '10 huéspedes'),
+    ('nueve huéspedes', '10 huéspedes'),
+    ('Nueve huéspedes', '10 huéspedes'),
+    ('Hasta nueve huéspedes', 'Hasta 10 huéspedes'),
+    ('hasta nueve huéspedes', 'hasta 10 huéspedes'),
+]
+
+
+def patch_capacity_page(path: Path) -> None:
+    text = path.read_text(encoding='utf-8')
+    for old, new in TEXT_REPLACEMENTS:
+        text = text.replace(old, new)
+    # Visible standalone counters.
+    text = re.sub(r'(<strong>)9(</strong><span(?:\s+data-i=["\']guests["\'])?>)', r'\g<1>10\g<2>', text)
+    text = parse_json_blocks(text, lambda payload: walk_update(payload, None, False))
+    path.write_text(text, encoding='utf-8')
+
+
+def update_sitemap(path: Path) -> None:
+    text = path.read_text(encoding='utf-8')
+    text = re.sub(r'<lastmod>\d{4}-\d{2}-\d{2}</lastmod>', f'<lastmod>{DATE}</lastmod>', text)
+    path.write_text(text, encoding='utf-8')
+
+
+def validate_html(path: Path, lang: str | None = None, off_season: bool = False) -> None:
+    text = path.read_text(encoding='utf-8')
+    soup = BeautifulSoup(text, 'html.parser')
+    if len(soup.find_all('h1')) != 1:
+        raise RuntimeError(f'{path}: expected one H1')
+    if any(not h.get_text(' ', strip=True) for h in soup.find_all(['h2', 'h3'])):
+        raise RuntimeError(f'{path}: empty heading')
+    for block in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+        json.loads(block.string or block.get_text())
+    stale = ['up to 9 guests', 'nine guests', '9 voyageurs', 'neuf voyageurs', '9 huéspedes', 'nueve huéspedes']
+    low = text.lower()
+    if any(s.lower() in low for s in stale):
+        raise RuntimeError(f'{path}: stale capacity copy remains')
+    if '"value":10,"unitText":"guests"' not in text:
+        raise RuntimeError(f'{path}: structured occupancy 10 missing')
+    if off_season:
+        markers = {
+            'en': ['Play golf. Live Andalusia.', 'From 4 nights', 'working wood-burning', LINKS['transfer']],
+            'fr': ['Jouer au golf. Vivre l’Andalousie.', 'Dès 4 nuits', 'insert à bois fonctionnel', LINKS['transfer']],
+            'es': ['Jugar al golf. Vivir Andalucía.', 'Desde 4 noches', 'insert de leña funcional', LINKS['transfer']],
+        }[lang]
+        for marker in markers:
+            if marker not in text:
+                raise RuntimeError(f'{path}: missing marker {marker!r}')
+        for url in LINKS.values():
+            if url not in text:
+                raise RuntimeError(f'{path}: missing external URL {url}')
+        if 'FAQPage' not in text or 'Secure garage storage for golf bags' not in text:
+            raise RuntimeError(f'{path}: structured golf amenities/FAQ missing')
+    if 'latitude' in low or 'longitude' in low:
+        raise RuntimeError(f'{path}: exact coordinates exposed')
+
+
+def main() -> None:
+    pages = [
+        ROOT / 'index.html',
+        ROOT / 'en/index.html',
+        ROOT / 'es/index.html',
+        ROOT / 'villa-nuevo-portil/index.html',
+        ROOT / 'en/holiday-villa-nuevo-portil/index.html',
+        ROOT / 'es/alquiler-vacacional-nuevo-portil/index.html',
+    ]
+    for p in pages:
+        if not p.is_file():
+            raise RuntimeError(f'Missing page: {p}')
+        patch_capacity_page(p)
+    off = {
+        'en': ROOT / 'off-season/index.html',
+        'fr': ROOT / 'off-season/fr/index.html',
+        'es': ROOT / 'off-season/es/index.html',
+    }
+    for lang, p in off.items():
+        if not p.is_file():
+            raise RuntimeError(f'Missing page: {p}')
+        patch_offseason(p, lang)
+    update_sitemap(ROOT / 'sitemap.xml')
+    for p in pages:
+        validate_html(p)
+    for lang, p in off.items():
+        validate_html(p, lang, True)
+    sitemap = (ROOT / 'sitemap.xml').read_text(encoding='utf-8')
+    if sitemap.count('<loc>') != 9 or sitemap.count(f'<lastmod>{DATE}</lastmod>') != 9:
+        raise RuntimeError('Sitemap validation failed')
+    print('Villa Almale V7 golf lifestyle update validated successfully.')
+
+
+if __name__ == '__main__':
+    main()
