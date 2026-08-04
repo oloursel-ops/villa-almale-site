@@ -1,0 +1,176 @@
+name: Deploy WhatsApp button to Villa Almale homepage
+run-name: Add and verify the Villa Almale WhatsApp contact button
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-whatsapp-home.yml
+      - scripts/add-whatsapp-home.py
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-whatsapp-home-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify homepage
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate production target and tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PASSWORD"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m py_compile scripts/add-whatsapp-home.py
+
+      - name: Download and archive current homepage
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live before after
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/index.html" "live/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          test -s live/index.html
+          cp live/index.html before/index.html
+          tar -czf "villa-almale-home-before-whatsapp-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Add and validate WhatsApp button
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/add-whatsapp-home.py live/index.html | tee whatsapp-update.log
+          grep -Fq 'villa-almale-whatsapp-float-v1' live/index.html
+          grep -Fq 'https://wa.me/33687174067' live/index.html
+          grep -Fq 'data-whatsapp-contact="villa-almale"' live/index.html
+          test "$(grep -Fo 'data-whatsapp-contact="villa-almale"' live/index.html | wc -l)" -eq 1
+          test "$(grep -Fo 'id="villa-almale-whatsapp-float-v1-style"' live/index.html | wc -l)" -eq 1
+
+      - name: Upload targeted homepage
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH" "live/index.html"
+            echo 'bye'
+          } > upload-whatsapp.lftp
+          lftp -f upload-whatsapp.lftp 2>&1 | tee upload-whatsapp.log
+
+      - name: Compare remote homepage byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/index.html" "after/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/index.html after/index.html
+          tar -czf "villa-almale-home-after-whatsapp-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify the public homepage
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > public-verification.log
+          verified=0
+          for attempt in $(seq 1 24); do
+            if curl -L --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/?whatsappcheck=${GITHUB_RUN_ID}-${attempt}" -o public-home.html \
+              && grep -Fq 'villa-almale-whatsapp-float-v1' public-home.html \
+              && grep -Fq 'https://wa.me/33687174067' public-home.html \
+              && grep -Fq 'data-whatsapp-contact="villa-almale"' public-home.html; then
+              echo "Public WhatsApp button verified on attempt ${attempt}." | tee -a public-verification.log
+              verified=1
+              break
+            fi
+            echo "Attempt ${attempt}: public cache not updated yet." >> public-verification.log
+            sleep 5
+          done
+          test "$verified" -eq 1
+          test "$(grep -Fo 'data-whatsapp-contact="villa-almale"' public-home.html | wc -l)" -eq 1
+          echo 'Homepage contains one WhatsApp button linked to +33 6 87 17 40 67.' >> public-verification.log
+
+      - name: Restore the targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH" "before/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve the pre-deployment backup
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-home-before-whatsapp-${{ github.run_id }}
+          path: villa-almale-home-before-whatsapp-${{ github.run_id }}.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Preserve verified deployment evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-home-whatsapp-verified-${{ github.run_id }}
+          path: |
+            villa-almale-home-after-whatsapp-${{ github.run_id }}.tar.gz
+            whatsapp-update.log
+            upload-whatsapp.log
+            public-verification.log
+          retention-days: 90
+          if-no-files-found: error
