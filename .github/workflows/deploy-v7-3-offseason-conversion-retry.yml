@@ -1,0 +1,209 @@
+name: Deploy Villa Almale V7.3 landing conversion retry
+run-name: Retry Villa Almale V7.3 — verified landing page deployment
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-3-offseason-conversion-retry.yml
+
+concurrency:
+  group: villa-almale-v7-3-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare tools and target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v73-offseason-conversion.py
+
+      - name: Download and back up current page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season before/off-season
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          test -s live/off-season/index.html
+          cp live/off-season/index.html before/off-season/index.html
+          tar -czf "villa-almale-before-v73-retry-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Patch and validate locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v73-offseason-conversion.py live/off-season/index.html 2>&1 | tee v73-retry-update.log
+          grep -Fq 'Play golf. Live Andalusia.' live/off-season/index.html
+          grep -Fq 'Limited autumn availability' live/off-season/index.html
+          grep -Fq 'See the house before you check the price.' live/off-season/index.html
+          grep -Fq 'brand-official' live/off-season/index.html
+          grep -Fq 'mobile-booking-cta' live/off-season/index.html
+          grep -Fq 'special_offer_click' live/off-season/index.html
+          grep -Fq 'villa-almale-location-golf-v7-2.webp' live/off-season/index.html
+          grep -Fq 'From 4 nights' live/off-season/index.html
+          test "$(grep -Fo 'class=\"autumn-offer-bar\"' live/off-season/index.html | wc -l)" -eq 1
+          test "$(grep -Fo 'class=\"mobile-booking-cta\"' live/off-season/index.html | wc -l)" -eq 1
+
+      - name: Upload page
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            echo 'bye'
+          } > upload-v73-retry.lftp
+          lftp -f upload-v73-retry.lftp 2>&1 | tee upload-v73-retry.log
+
+      - name: Compare remote page byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          tar -czf "villa-almale-after-v73-retry-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public page and assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > public-verification.log
+          success=0
+          for attempt in $(seq 1 18); do
+            if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/?v73retry=${GITHUB_RUN_ID}-${attempt}" -o public-golf-en.html \
+              && grep -Fq 'Limited autumn availability' public-golf-en.html \
+              && grep -Fq 'See the house before you check the price.' public-golf-en.html \
+              && grep -Fq 'brand-official' public-golf-en.html \
+              && grep -Fq 'villa-almale-location-golf-v7-2.webp' public-golf-en.html; then
+              echo "Public page verified on attempt ${attempt}" | tee -a public-verification.log
+              success=1
+              break
+            fi
+            sleep 5
+          done
+          test "$success" -eq 1
+
+          for asset in hero-villa-piscine-jardin.webp piscine-privee.webp patio-andalou-table-dressee.webp salon-salle-a-manger.webp suite-principale.webp chambre-double-bleue.webp villa-almale-location-golf-v7-2.webp; do
+            curl --retry 3 --retry-delay 2 -fsS -o /dev/null "https://villanuevoportil.com/assets/images/current/${asset}"
+            echo "Asset verified: ${asset}" >> public-verification.log
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+          text = Path('public-golf-en.html').read_text(encoding='utf-8')
+          soup = BeautifulSoup(text, 'html.parser')
+          assert len(soup.find_all('h1')) == 1
+          assert soup.h1.get_text(' ', strip=True) == 'Play golf. Live Andalusia.'
+          assert len(soup.select('[data-autumn-offer]')) == 1
+          assert len(soup.select('.conversion-photo-grid img')) == 6
+          assert len(soup.select('.hero-proof span')) == 3
+          assert len(soup.select('.mobile-booking-cta')) == 1
+          assert soup.select_one('#location-at-a-glance img[src="/assets/images/current/villa-almale-location-golf-v7-2.webp"]')
+          assert 'small private gate on the property boundary' not in soup.select_one('#golf .golf-access').get_text(' ', strip=True)
+          assert all(h.get_text(' ', strip=True) for h in soup.find_all(['h2', 'h3']))
+          for block in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+              json.loads(block.string or block.get_text())
+          assert 'latitude' not in text.lower() and 'longitude' not in text.lower()
+          print('Public Villa Almale V7.3 landing page verified.')
+          PY
+
+      - name: Restore backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v73-retry-${{ github.run_id }}
+          path: |
+            villa-almale-before-v73-retry-${{ github.run_id }}.tar.gz
+            villa-almale-after-v73-retry-${{ github.run_id }}.tar.gz
+            v73-retry-update.log
+            public-verification.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const files = ['v73-retry-update.log','public-verification.log','upload-v73-retry.log','rollback.log'];
+            const details = files.filter(fs.existsSync).map(f => `${f}:\n${fs.readFileSync(f,'utf8').slice(-7000)}`).join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[automation] Villa Almale V7.3 retry — ${status}`,
+              body: [`Workflow status: **${status}**`,`Run ID: ${context.runId}`,`Commit: ${context.sha}`,`Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,status === 'success' ? 'The English landing page was backed up, deployed, compared byte for byte and verified publicly.' : `Failure diagnostic:\n\n\`\`\`text\n${details || 'No diagnostic file.'}\n\`\`\``].join('\n\n')
+            });
