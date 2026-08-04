@@ -1,0 +1,237 @@
+name: Deploy Villa Almale V7.3 English landing conversion
+run-name: Deploy and verify Villa Almale V7.3 — autumn offer and conversion improvements
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-3-offseason-conversion.yml
+      - scripts/v73-offseason-conversion.py
+
+concurrency:
+  group: villa-almale-v7-3-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify English landing page
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate target and install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v73-offseason-conversion.py
+
+      - name: Download and archive current production page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season before/off-season
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          test -s live/off-season/index.html
+          cp live/off-season/index.html before/off-season/index.html
+          tar -czf "villa-almale-before-v73-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7.3 conversion patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v73-offseason-conversion.py live/off-season/index.html 2>&1 | tee v73-update.log
+          grep -Fq 'Play golf. Live Andalusia.' live/off-season/index.html
+          grep -Fq 'Limited autumn availability' live/off-season/index.html
+          grep -Fq 'special direct rates for selected September &amp; October 2026 stays' live/off-season/index.html
+          grep -Fq 'See the house before you check the price.' live/off-season/index.html
+          grep -Fq 'brand-official' live/off-season/index.html
+          grep -Fq 'mobile-booking-cta' live/off-season/index.html
+          grep -Fq 'special_offer_click' live/off-season/index.html
+          grep -Fq '/assets/images/current/villa-almale-location-golf-v7-2.webp' live/off-season/index.html
+          grep -Fq 'https://taximarrompido.com/contacto' live/off-season/index.html
+          grep -Fq 'From 4 nights' live/off-season/index.html
+          test "$(grep -Fo 'class=\"autumn-offer-bar\"' live/off-season/index.html | wc -l)" -eq 1
+          test "$(grep -Fo 'class=\"mobile-booking-cta\"' live/off-season/index.html | wc -l)" -eq 1
+
+      - name: Upload targeted production page
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            echo 'bye'
+          } > upload-v73.lftp
+          lftp -f upload-v73.lftp 2>&1 | tee upload-v73.log
+
+      - name: Compare remote page byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          tar -czf "villa-almale-after-v73-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public page and image assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > public-verification.log
+          verified=0
+          for attempt in $(seq 1 18); do
+            if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/?v73check=${GITHUB_RUN_ID}-${attempt}" -o public-golf-en.html \
+              && grep -Fq 'Limited autumn availability' public-golf-en.html \
+              && grep -Fq 'See the house before you check the price.' public-golf-en.html \
+              && grep -Fq 'brand-official' public-golf-en.html \
+              && grep -Fq 'villa-almale-location-golf-v7-2.webp' public-golf-en.html; then
+              echo "Public landing page verified on attempt ${attempt}" | tee -a public-verification.log
+              verified=1
+              break
+            fi
+            sleep 5
+          done
+          test "$verified" -eq 1
+
+          for asset in \
+            hero-villa-piscine-jardin.webp \
+            piscine-privee.webp \
+            patio-andalou-table-dressee.webp \
+            salon-salle-a-manger.webp \
+            suite-principale.webp \
+            chambre-double-bleue.webp \
+            villa-almale-location-golf-v7-2.webp; do
+            curl --retry 3 --retry-delay 2 -fsS -o /dev/null "https://villanuevoportil.com/assets/images/current/${asset}"
+            echo "Asset verified: ${asset}" >> public-verification.log
+          done
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          text = Path('public-golf-en.html').read_text(encoding='utf-8')
+          soup = BeautifulSoup(text, 'html.parser')
+          assert len(soup.find_all('h1')) == 1
+          assert soup.h1.get_text(' ', strip=True) == 'Play golf. Live Andalusia.'
+          assert len(soup.select('[data-autumn-offer]')) == 1
+          assert len(soup.select('.conversion-photo-grid img')) == 6
+          assert len(soup.select('.hero-proof span')) == 3
+          assert len(soup.select('.mobile-booking-cta')) == 1
+          assert soup.select_one('#location-at-a-glance img[src="/assets/images/current/villa-almale-location-golf-v7-2.webp"]')
+          assert soup.select_one('#golf .golf-access')
+          assert 'small private gate on the property boundary' not in soup.select_one('#golf .golf-access').get_text(' ', strip=True)
+          assert all(h.get_text(' ', strip=True) for h in soup.find_all(['h2', 'h3']))
+          for block in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+              json.loads(block.string or block.get_text())
+          assert 'latitude' not in text.lower() and 'longitude' not in text.lower()
+          print('Public V7.3 landing page HTML, assets, JSON-LD and preserved V7.2 location visual validated.')
+          PY
+
+      - name: Restore targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve pre-deployment backup
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-before-v73-${{ github.run_id }}
+          path: villa-almale-before-v73-${{ github.run_id }}.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Preserve verified V7.3 artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v73-verified-${{ github.run_id }}
+          path: |
+            villa-almale-after-v73-${{ github.run_id }}.tar.gz
+            v73-update.log
+            public-verification.log
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const title = `[automation] Villa Almale V7.3 landing conversion — ${status}`;
+            const chunks = [];
+            for (const file of ['v73-update.log', 'public-verification.log', 'upload-v73.log', 'rollback.log']) {
+              if (fs.existsSync(file)) chunks.push(`${file}:\n${fs.readFileSync(file, 'utf8').slice(-7000)}`);
+            }
+            const body = [
+              `Workflow status: **${status}**`,
+              `Run ID: ${context.runId}`,
+              `Commit: ${context.sha}`,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              status === 'success'
+                ? 'The English off-season landing page was backed up, patched, uploaded, compared byte for byte and verified publicly. The V7.2 location visual was preserved.'
+                : `Failure diagnostic:\n\n\`\`\`text\n${chunks.join('\n\n') || 'No diagnostic file.'}\n\`\`\``
+            ].join('\n\n');
+            await github.rest.issues.create({owner: context.repo.owner, repo: context.repo.repo, title, body});
