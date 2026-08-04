@@ -1,0 +1,235 @@
+name: Deploy shared off-season branding and WhatsApp
+run-name: Fix multilingual off-season logo, autumn banner and WhatsApp button
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-offseason-shared-v1.yml
+      - scripts/update-offseason-shared.py
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-offseason-shared-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify three off-season pages
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate production target and install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          test -n "$DEPLOY_HOST"
+          test -n "$DEPLOY_USER"
+          test -n "$DEPLOY_PASSWORD"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/update-offseason-shared.py
+
+      - name: Download and archive the three current pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/fr live/off-season/es before/off-season/fr before/off-season/es after/off-season/fr after/off-season/es
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "live/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          test -s live/off-season/index.html
+          test -s live/off-season/fr/index.html
+          test -s live/off-season/es/index.html
+          cp live/off-season/index.html before/off-season/index.html
+          cp live/off-season/fr/index.html before/off-season/fr/index.html
+          cp live/off-season/es/index.html before/off-season/es/index.html
+          tar -czf "villa-almale-offseason-before-shared-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate shared corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > shared-update.log
+          python3 scripts/update-offseason-shared.py en live/off-season/index.html | tee -a shared-update.log
+          python3 scripts/update-offseason-shared.py fr live/off-season/fr/index.html | tee -a shared-update.log
+          python3 scripts/update-offseason-shared.py es live/off-season/es/index.html | tee -a shared-update.log
+          for file in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html; do
+            grep -Fq 'villa-almale-offseason-shared-v1' "$file"
+            grep -Fq 'data-whatsapp-contact="villa-almale-offseason"' "$file"
+            grep -Fq 'https://wa.me/33687174067' "$file"
+            grep -Fq 'class="brand brand-official"' "$file"
+            grep -Fq 'data-autumn-offer' "$file"
+            test "$(grep -Fo 'data-whatsapp-contact="villa-almale-offseason"' "$file" | wc -l)" -eq 1
+            test "$(grep -Fo 'class="brand brand-official"' "$file" | wc -l)" -eq 1
+            test "$(grep -Fo 'data-autumn-offer' "$file" | wc -l)" -ge 1
+          done
+          grep -Fq 'Disponibilités limitées cet automne' live/off-season/fr/index.html
+          grep -Fq 'Disponibilidad limitada este otoño' live/off-season/es/index.html
+          grep -Fq 'href="/fr/reservation.html"' live/off-season/fr/index.html
+          grep -Fq 'href="/es/reservation.html"' live/off-season/es/index.html
+
+      - name: Upload the three targeted pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "live/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            echo 'bye'
+          } > upload-shared.lftp
+          lftp -f upload-shared.lftp 2>&1 | tee upload-shared.log
+
+      - name: Compare the three remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "after/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          cmp live/off-season/fr/index.html after/off-season/fr/index.html
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          tar -czf "villa-almale-offseason-after-shared-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify all three public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > public-verification.log
+          verify_page() {
+            local lang="$1"
+            local url="$2"
+            local expected="$3"
+            local output="public-${lang}.html"
+            local verified=0
+            for attempt in $(seq 1 24); do
+              if curl -L --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?sharedcheck=${GITHUB_RUN_ID}-${attempt}" -o "$output" \
+                && grep -Fq 'villa-almale-offseason-shared-v1' "$output" \
+                && grep -Fq 'data-whatsapp-contact="villa-almale-offseason"' "$output" \
+                && grep -Fq 'https://wa.me/33687174067' "$output" \
+                && grep -Fq 'class="brand brand-official"' "$output" \
+                && grep -Fq 'data-autumn-offer' "$output" \
+                && grep -Fq "$expected" "$output"; then
+                echo "${lang}: verified publicly on attempt ${attempt}." | tee -a public-verification.log
+                verified=1
+                break
+              fi
+              sleep 5
+            done
+            test "$verified" -eq 1
+          }
+          verify_page en 'https://villanuevoportil.com/off-season/' 'Limited autumn availability'
+          verify_page fr 'https://villanuevoportil.com/off-season/fr/' 'Disponibilités limitées cet automne'
+          verify_page es 'https://villanuevoportil.com/off-season/es/' 'Disponibilidad limitada este otoño'
+          python3 - <<'PY'
+          from bs4 import BeautifulSoup
+          from pathlib import Path
+
+          expected = {
+              'en': ('/en/', '/en/reservation.html'),
+              'fr': ('/fr/', '/fr/reservation.html'),
+              'es': ('/es/', '/es/reservation.html'),
+          }
+          for lang, (home, booking) in expected.items():
+              text = Path(f'public-{lang}.html').read_text(encoding='utf-8')
+              soup = BeautifulSoup(text, 'html.parser')
+              assert len(soup.select('[data-whatsapp-contact="villa-almale-offseason"]')) == 1
+              assert 'wa.me/33687174067' in soup.select_one('[data-whatsapp-contact="villa-almale-offseason"]')['href']
+              assert len(soup.select('[data-autumn-offer]')) == 1
+              assert soup.select_one('[data-autumn-offer] .autumn-offer-link')['href'] == booking
+              brand = soup.select_one('header.site-header a.brand-official') or soup.select_one('a.brand-official')
+              assert brand and brand.get('href') == home
+              assert brand.select_one('svg.brand-icon[viewBox="0 0 64 64"]')
+              assert not brand.select_one('img')
+              assert soup.find('style', id='villa-almale-offseason-shared-v1')
+          print('All three public off-season pages validated: logo, banner and WhatsApp.')
+          PY
+
+      - name: Restore all three backups on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "before/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve the production backup
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-offseason-before-shared-${{ github.run_id }}
+          path: villa-almale-offseason-before-shared-${{ github.run_id }}.tar.gz
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Preserve verified deployment evidence
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-offseason-shared-verified-${{ github.run_id }}
+          path: |
+            villa-almale-offseason-after-shared-${{ github.run_id }}.tar.gz
+            shared-update.log
+            upload-shared.log
+            public-verification.log
+          retention-days: 90
+          if-no-files-found: error
