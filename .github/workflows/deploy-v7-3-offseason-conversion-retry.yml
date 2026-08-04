@@ -72,8 +72,8 @@ jobs:
           grep -Fq 'special_offer_click' live/off-season/index.html
           grep -Fq 'villa-almale-location-golf-v7-2.webp' live/off-season/index.html
           grep -Fq 'From 4 nights' live/off-season/index.html
-          test "$(grep -Fo 'class=\"autumn-offer-bar\"' live/off-season/index.html | wc -l)" -eq 1
-          test "$(grep -Fo 'class=\"mobile-booking-cta\"' live/off-season/index.html | wc -l)" -eq 1
+          test "$(grep -Fo 'class="autumn-offer-bar"' live/off-season/index.html | wc -l)" -eq 1
+          test "$(grep -Fo 'class="mobile-booking-cta"' live/off-season/index.html | wc -l)" -eq 1
 
       - name: Upload page
         shell: bash
