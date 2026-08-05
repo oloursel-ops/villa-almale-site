@@ -66,8 +66,16 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/v78-spanish-minimum-stay.py live/off-season/es/index.html 2>&1 | tee v78-update.log
-          test "$(grep -Fo 'Estancia mínima: desde 4 noches, según la semana.' live/off-season/es/index.html | wc -l)" -eq 2
-          ! grep -Fq 'estancia mínima de siete noches' live/off-season/es/index.html
+          python3 - live/off-season/es/index.html <<'PY'
+          import sys
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          text = BeautifulSoup(Path(sys.argv[1]).read_text(encoding='utf-8'), 'html.parser').get_text(' ', strip=True)
+          phrase = 'Estancia mínima: desde 4 noches, según la semana.'
+          assert text.count(phrase) == 2
+          assert 'estancia mínima de siete noches' not in text
+          PY
 
       - name: Upload the corrected production page
         shell: bash
@@ -108,16 +116,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p public/off-season/es
+          validate_page() {
+            python3 - "$1" <<'PY'
+          import sys
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          text = BeautifulSoup(Path(sys.argv[1]).read_text(encoding='utf-8'), 'html.parser').get_text(' ', strip=True)
+          phrase = 'Estancia mínima: desde 4 noches, según la semana.'
+          assert text.count(phrase) == 2
+          assert 'estancia mínima de siete noches' not in text
+          PY
+          }
+          verified=0
           for attempt in $(seq 1 18); do
             if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/es/?v78check=${GITHUB_RUN_ID}-${attempt}" -o public/off-season/es/index.html \
-              && test "$(grep -Fo 'Estancia mínima: desde 4 noches, según la semana.' public/off-season/es/index.html | wc -l)" -eq 2; then
+              && validate_page public/off-season/es/index.html; then
               echo "Public V7.8 marker verified on attempt ${attempt}" | tee public-verification.log
+              verified=1
               break
             fi
             sleep 5
           done
-          test "$(grep -Fo 'Estancia mínima: desde 4 noches, según la semana.' public/off-season/es/index.html | wc -l)" -eq 2
-          ! grep -Fq 'estancia mínima de siete noches' public/off-season/es/index.html
+          test "$verified" -eq 1
 
       - name: Restore the targeted backup on failure
         if: ${{ failure() }}
