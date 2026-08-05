@@ -82,7 +82,7 @@ jobs:
           grep -Fq '2.226 €' live/off-season/es/index.html
           ! grep -Fq '371 € por adulto' live/off-season/es/index.html
           ! grep -Fq '26 de septiembre – 3 de octubre' live/off-season/es/index.html
-          grep -Fq 'Flexibilidad desde el 12 de septiembre' live/off-season/es/index.html
+          grep -Fq 'Llegadas flexibles desde el 12 de septiembre' live/off-season/es/index.html
           grep -Fq 'data-analytics-event="special_offer_click"' live/off-season/es/index.html
           grep -Fq 'data-analytics-event="booking_click"' live/off-season/es/index.html
           grep -Fq 'data-analytics-event="whatsapp_click"' live/off-season/es/index.html
@@ -182,7 +182,7 @@ jobs:
           assert '2.226 €' in page.get_text(' ', strip=True)
           assert '371 € por adulto' not in page.get_text(' ', strip=True)
           assert '26 de septiembre – 3 de octubre' not in page.get_text(' ', strip=True)
-          assert 'Flexibilidad desde el 12 de septiembre' in page.get_text(' ', strip=True)
+          assert 'Llegadas flexibles desde el 12 de septiembre' in page.get_text(' ', strip=True)
           for block in page.find_all('script', attrs={'type': 'application/ld+json'}):
               payload = json.loads(block.string or block.get_text())
               assert all(
