@@ -1,0 +1,269 @@
+name: Deploy Villa Almale V7.4 global banners and floating actions
+run-name: Deploy and verify Villa Almale V7.4 — multilingual offer, WhatsApp and booking actions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-4-global-banner-floating-actions.yml
+      - scripts/v74-global-banner-floating-actions.py
+
+concurrency:
+  group: villa-almale-v7-4-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify nine commercial pages
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v74-global-banner-floating-actions.py
+          cat > manifest.txt <<'MANIFEST'
+          sitemap.xml
+          index.html
+          villa-nuevo-portil/index.html
+          off-season/fr/index.html
+          en/index.html
+          en/holiday-villa-nuevo-portil/index.html
+          off-season/index.html
+          es/index.html
+          es/alquiler-vacacional-nuevo-portil/index.html
+          off-season/es/index.html
+          MANIFEST
+          test "$(grep -cve '^$' manifest.txt)" -eq 10
+
+      - name: Download and archive current production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live before
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "live/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -a live/. before/
+          while IFS= read -r file; do test -s "before/$file"; done < manifest.txt
+          tar -czf "villa-almale-before-v74-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v74-global-banner-floating-actions.py live 2>&1 | tee v74-update.log
+          test "$(grep -Rho 'data-site-global-offer' live --include='*.html' | wc -l)" -eq 9
+          test "$(grep -Rho 'class=\"site-floating-actions\"' live --include='*.html' | wc -l)" -eq 9
+          test "$(grep -Rho 'https://wa.me/33687174067' live --include='*.html' | wc -l)" -eq 9
+          test "$(grep -Rho 'data-analytics-event=\"whatsapp_click\"' live --include='*.html' | wc -l)" -eq 9
+          test "$(grep -Rho 'data-analytics-event=\"special_offer_click\"' live --include='*.html' | wc -l)" -eq 9
+          grep -Fq 'Disponibilités limitées cet automne' live/index.html
+          grep -Fq 'Limited autumn availability' live/en/index.html
+          grep -Fq 'Disponibilidad limitada este otoño' live/es/index.html
+          grep -Fq 'See the house before you check the price.' live/off-season/index.html
+          grep -Fq 'villa-almale-location-golf-v7-2.webp' live/off-season/index.html
+          test "$(grep -c '<lastmod>2026-08-05</lastmod>' live/sitemap.xml)" -eq 9
+
+      - name: Upload targeted production files
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > upload-v74.lftp
+          lftp -f upload-v74.lftp 2>&1 | tee upload-v74.log
+
+      - name: Compare remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "after/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "after/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          while IFS= read -r file; do cmp "live/$file" "after/$file"; done < manifest.txt
+          tar -czf "villa-almale-after-v74-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/fr public/en/holiday-villa-nuevo-portil public/off-season public/es/alquiler-vacacional-nuevo-portil public/off-season/es public/villa-nuevo-portil public/en public/es
+          fetch_until() {
+            local url="$1" marker="$2" output="$3"
+            local attempt
+            for attempt in $(seq 1 18); do
+              if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?v74check=${GITHUB_RUN_ID}-${attempt}" -o "$output" && grep -Fq "$marker" "$output"; then
+                printf '%s verified on attempt %s\n' "$url" "$attempt" | tee -a public-verification.log
+                return 0
+              fi
+              sleep 5
+            done
+            echo "Timed out waiting for ${marker} at ${url}" >&2
+            return 1
+          }
+          : > public-verification.log
+          fetch_until 'https://villanuevoportil.com/' 'Disponibilités limitées cet automne' public/index.html
+          fetch_until 'https://villanuevoportil.com/villa-nuevo-portil/' 'Disponibilités limitées cet automne' public/villa-nuevo-portil/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/fr/' 'Disponibilités limitées cet automne' public/off-season/fr/index.html
+          fetch_until 'https://villanuevoportil.com/en/' 'Limited autumn availability' public/en/index.html
+          fetch_until 'https://villanuevoportil.com/en/holiday-villa-nuevo-portil/' 'Limited autumn availability' public/en/holiday-villa-nuevo-portil/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/' 'Limited autumn availability' public/off-season/index.html
+          fetch_until 'https://villanuevoportil.com/es/' 'Disponibilidad limitada este otoño' public/es/index.html
+          fetch_until 'https://villanuevoportil.com/es/alquiler-vacacional-nuevo-portil/' 'Disponibilidad limitada este otoño' public/es/alquiler-vacacional-nuevo-portil/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/es/' 'Disponibilidad limitada este otoño' public/off-season/es/index.html
+          curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/sitemap.xml?v74check=${GITHUB_RUN_ID}" -o public/sitemap.xml
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          pages = {
+              'public/index.html': ('fr', '/reservation.html', 'Disponibilités limitées cet automne'),
+              'public/villa-nuevo-portil/index.html': ('fr', '/reservation.html', 'Disponibilités limitées cet automne'),
+              'public/off-season/fr/index.html': ('fr', '/reservation.html', 'Disponibilités limitées cet automne'),
+              'public/en/index.html': ('en', '/en/reservation.html', 'Limited autumn availability'),
+              'public/en/holiday-villa-nuevo-portil/index.html': ('en', '/en/reservation.html', 'Limited autumn availability'),
+              'public/off-season/index.html': ('en', '/en/reservation.html', 'Limited autumn availability'),
+              'public/es/index.html': ('es', '/es/reservation.html', 'Disponibilidad limitada este otoño'),
+              'public/es/alquiler-vacacional-nuevo-portil/index.html': ('es', '/es/reservation.html', 'Disponibilidad limitada este otoño'),
+              'public/off-season/es/index.html': ('es', '/es/reservation.html', 'Disponibilidad limitada este otoño'),
+          }
+          for filename, (lang, booking, marker) in pages.items():
+              text = Path(filename).read_text(encoding='utf-8')
+              soup = BeautifulSoup(text, 'html.parser')
+              assert len(soup.select('[data-site-global-offer]')) == 1, filename
+              assert len(soup.select('.site-floating-actions')) == 1, filename
+              assert len(soup.select('.site-floating-actions a')) == 2, filename
+              assert marker in soup.select_one('[data-site-global-offer]').get_text(' ', strip=True), filename
+              assert soup.select_one(f'.site-floating-actions a[href="{booking}"]'), filename
+              whatsapp = soup.select_one('[data-analytics-event="whatsapp_click"]')
+              assert whatsapp and whatsapp.get('href', '').startswith('https://wa.me/33687174067?'), filename
+              assert soup.select_one('[data-analytics-event="special_offer_click"]'), filename
+              assert soup.select_one('[data-analytics-event="booking_click"]'), filename
+              assert len(soup.find_all('h1')) == 1, filename
+              assert all(h.get_text(' ', strip=True) for h in soup.find_all(['h2', 'h3'])), filename
+              assert not soup.select_one('.mobile-booking-cta'), filename
+              for block in soup.find_all('script', attrs={'type': 'application/ld+json'}):
+                  json.loads(block.string or block.get_text())
+          english = Path('public/off-season/index.html').read_text(encoding='utf-8')
+          for marker in ['See the house before you check the price.', 'conversion-photo-grid', 'hero-proof', 'brand-official', 'villa-almale-location-golf-v7-2.webp']:
+              assert marker in english, marker
+          sitemap = Path('public/sitemap.xml').read_text(encoding='utf-8')
+          assert sitemap.count('<loc>') == 9
+          assert sitemap.count('<lastmod>2026-08-05</lastmod>') == 9
+          print('Public V7.4 multilingual offer banners, WhatsApp and booking actions validated.')
+          PY
+
+      - name: Restore targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -d before ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              directory="$(dirname "$file")"
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$directory" "before/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v74-${{ github.run_id }}
+          path: |
+            villa-almale-before-v74-${{ github.run_id }}.tar.gz
+            villa-almale-after-v74-${{ github.run_id }}.tar.gz
+            v74-update.log
+            public-verification.log
+            upload-v74.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const files = ['v74-update.log','public-verification.log','upload-v74.log','rollback.log'];
+            const details = files.filter(fs.existsSync).map(f => `${f}:\n${fs.readFileSync(f,'utf8').slice(-7000)}`).join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[automation] Villa Almale V7.4 global actions — ${status}`,
+              body: [`Workflow status: **${status}**`,`Run ID: ${context.runId}`,`Commit: ${context.sha}`,`Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,status === 'success' ? 'Nine commercial pages were backed up, patched, uploaded, compared byte for byte and verified publicly.' : `Failure diagnostic:\n\n\`\`\`text\n${details || 'No diagnostic file.'}\n\`\`\``].join('\n\n')
+            });
