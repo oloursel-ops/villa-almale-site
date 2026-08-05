@@ -389,7 +389,7 @@ def patch_spanish_landing(path: Path) -> None:
         global_offer["data-offer-version"] = "september-2026-es"
         global_offer["aria-label"] = "Oferta directa del 26 de septiembre"
         global_offer.select_one(".site-autumn-offer__text").string = (
-            "26/09–03/10 · Villa completa para seis: 2.226 € con limpieza, ropa y gastos incluidos."
+            "Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa."
         )
         global_cta = global_offer.select_one(".site-autumn-offer__cta")
         global_cta.string = "Ver la oferta →"
