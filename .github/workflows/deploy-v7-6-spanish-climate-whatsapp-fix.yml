@@ -1,0 +1,206 @@
+name: Deploy Villa Almale V7.6 Spanish climate and WhatsApp fix
+run-name: Deploy and verify Villa Almale V7.6 — climate block and one floating WhatsApp action
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-6-spanish-climate-whatsapp-fix.yml
+      - scripts/v76-spanish-climate-whatsapp-fix.py
+
+concurrency:
+  group: villa-almale-v7-6-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify the Spanish landing page
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v76-spanish-climate-whatsapp-fix.py
+
+      - name: Download and archive the current production page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/es before/off-season/es
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp live/off-season/es/index.html before/off-season/es/index.html
+          test -s before/off-season/es/index.html
+          tar -czf "villa-almale-before-v76-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v76-spanish-climate-whatsapp-fix.py live/off-season/es/index.html 2>&1 | tee v76-update.log
+          grep -Fq 'Mucho tiempo al aire libre, incluso al final del verano.' live/off-season/es/index.html
+          grep -Fq '29,4 / 17,3 °C' live/off-season/es/index.html
+          grep -Fq '24,9 / 14,1 °C' live/off-season/es/index.html
+          grep -Fq '268 h de sol' live/off-season/es/index.html
+          grep -Fq '211 h de sol' live/off-season/es/index.html
+          grep -Fq 'entre la ría del Río Piedras, los pinares y el Atlántico' live/off-season/es/index.html
+          grep -Fq 'id="el-rompido-nautica"' live/off-season/es/index.html
+          grep -Fq '/assets/images/current/el-rompido-marina.webp' live/off-season/es/index.html
+          ! grep -Fq 'data-whatsapp-contact="villa-almale-offseason"' live/off-season/es/index.html
+
+      - name: Upload the targeted production page
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            echo 'bye'
+          } > upload-v76.lftp
+          lftp -f upload-v76.lftp 2>&1 | tee upload-v76.log
+
+      - name: Compare the remote page byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season/es
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          tar -czf "villa-almale-after-v76-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify the public page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/es
+          for attempt in $(seq 1 18); do
+            if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/es/?v76check=${GITHUB_RUN_ID}-${attempt}" -o public/off-season/es/index.html \
+              && grep -Fq 'Mucho tiempo al aire libre, incluso al final del verano.' public/off-season/es/index.html; then
+              echo "Public V7.6 marker verified on attempt ${attempt}" | tee public-verification.log
+              break
+            fi
+            sleep 5
+          done
+          grep -Fq 'Mucho tiempo al aire libre, incluso al final del verano.' public/off-season/es/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          page = BeautifulSoup(Path('public/off-season/es/index.html').read_text(encoding='utf-8'), 'html.parser')
+          assert page.select_one('[data-whatsapp-contact="villa-almale-offseason"]') is None
+          assert len(page.select('.site-floating-actions')) == 1
+          assert len(page.select('.site-floating-actions .site-floating-action--whatsapp')) == 1
+          assert len(page.select('.site-floating-actions .site-floating-action--booking')) == 1
+          assert len(page.select('#clima-septiembre-octubre')) == 1
+          assert len(page.select('#clima-septiembre-octubre .es-climate-card')) == 4
+          assert page.select_one('#clima-septiembre-octubre').find_previous('section', id='beach') is not None
+          assert len(page.select('section#beach img[src="/assets/images/current/plage-ria-rio-piedras.webp"]')) == 1
+          assert len(page.select('section#nautical #el-rompido-nautica img[src="/assets/images/current/el-rompido-marina.webp"]')) == 1
+          print('Public V7.6 climate block and floating actions validated.')
+          PY
+
+      - name: Restore the targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/es/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v76-${{ github.run_id }}
+          path: |
+            villa-almale-before-v76-${{ github.run_id }}.tar.gz
+            villa-almale-after-v76-${{ github.run_id }}.tar.gz
+            v76-update.log
+            public-verification.log
+            upload-v76.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const files = ['v76-update.log','public-verification.log','upload-v76.log','rollback.log'];
+            const details = files.filter(fs.existsSync).map(f => `${f}:\n${fs.readFileSync(f,'utf8').slice(-7000)}`).join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[automation] Villa Almale V7.6 Spanish climate and WhatsApp fix — ${status}`,
+              body: [
+                `Workflow status: **${status}**`,
+                `Run ID: ${context.runId}`,
+                `Commit: ${context.sha}`,
+                `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                status === 'success'
+                  ? 'The Spanish page was backed up, deduplicated, enriched with the AEMET climate block, uploaded, compared byte for byte and verified publicly.'
+                  : 'The workflow failed. If upload started, the targeted production page was restored from the pre-deployment backup.',
+                details ? `\n\n${details}` : ''
+              ].join('\n')
+            });
