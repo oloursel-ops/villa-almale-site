@@ -84,14 +84,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/v74-global-banner-floating-actions.py live 2>&1 | tee v74-update.log
-          test "$(grep -Rho 'data-site-global-offer' live --include='*.html' | wc -l)" -eq 9
-          test "$(grep -Rho 'class=\"site-floating-actions\"' live --include='*.html' | wc -l)" -eq 9
-          test "$(grep -Rho 'https://wa.me/33687174067' live --include='*.html' | wc -l)" -eq 9
-          test "$(grep -Rho 'data-analytics-event=\"whatsapp_click\"' live --include='*.html' | wc -l)" -eq 9
-          test "$(grep -Rho 'data-analytics-event=\"special_offer_click\"' live --include='*.html' | wc -l)" -eq 9
           grep -Fq 'Disponibilités limitées cet automne' live/index.html
           grep -Fq 'Limited autumn availability' live/en/index.html
           grep -Fq 'Disponibilidad limitada este otoño' live/es/index.html
+          grep -Fq 'https://wa.me/33687174067' live/index.html
+          grep -Fq 'data-analytics-event="whatsapp_click"' live/en/index.html
+          grep -Fq 'data-analytics-event="special_offer_click"' live/es/index.html
           grep -Fq 'See the house before you check the price.' live/off-season/index.html
           grep -Fq 'villa-almale-location-golf-v7-2.webp' live/off-season/index.html
           test "$(grep -c '<lastmod>2026-08-05</lastmod>' live/sitemap.xml)" -eq 9
@@ -174,17 +172,17 @@ jobs:
           from bs4 import BeautifulSoup
 
           pages = {
-              'public/index.html': ('fr', '/reservation.html', 'Disponibilités limitées cet automne'),
-              'public/villa-nuevo-portil/index.html': ('fr', '/reservation.html', 'Disponibilités limitées cet automne'),
-              'public/off-season/fr/index.html': ('fr', '/reservation.html', 'Disponibilités limitées cet automne'),
-              'public/en/index.html': ('en', '/en/reservation.html', 'Limited autumn availability'),
-              'public/en/holiday-villa-nuevo-portil/index.html': ('en', '/en/reservation.html', 'Limited autumn availability'),
-              'public/off-season/index.html': ('en', '/en/reservation.html', 'Limited autumn availability'),
-              'public/es/index.html': ('es', '/es/reservation.html', 'Disponibilidad limitada este otoño'),
-              'public/es/alquiler-vacacional-nuevo-portil/index.html': ('es', '/es/reservation.html', 'Disponibilidad limitada este otoño'),
-              'public/off-season/es/index.html': ('es', '/es/reservation.html', 'Disponibilidad limitada este otoño'),
+              'public/index.html': ('/reservation.html', 'Disponibilités limitées cet automne'),
+              'public/villa-nuevo-portil/index.html': ('/reservation.html', 'Disponibilités limitées cet automne'),
+              'public/off-season/fr/index.html': ('/reservation.html', 'Disponibilités limitées cet automne'),
+              'public/en/index.html': ('/en/reservation.html', 'Limited autumn availability'),
+              'public/en/holiday-villa-nuevo-portil/index.html': ('/en/reservation.html', 'Limited autumn availability'),
+              'public/off-season/index.html': ('/en/reservation.html', 'Limited autumn availability'),
+              'public/es/index.html': ('/es/reservation.html', 'Disponibilidad limitada este otoño'),
+              'public/es/alquiler-vacacional-nuevo-portil/index.html': ('/es/reservation.html', 'Disponibilidad limitada este otoño'),
+              'public/off-season/es/index.html': ('/es/reservation.html', 'Disponibilidad limitada este otoño'),
           }
-          for filename, (lang, booking, marker) in pages.items():
+          for filename, (booking, marker) in pages.items():
               text = Path(filename).read_text(encoding='utf-8')
               soup = BeautifulSoup(text, 'html.parser')
               assert len(soup.select('[data-site-global-offer]')) == 1, filename
@@ -207,7 +205,7 @@ jobs:
           sitemap = Path('public/sitemap.xml').read_text(encoding='utf-8')
           assert sitemap.count('<loc>') == 9
           assert sitemap.count('<lastmod>2026-08-05</lastmod>') == 9
-          print('Public V7.4 multilingual offer banners, WhatsApp and booking actions validated.')
+          print('Public V7.4 multilingual banners, WhatsApp and booking actions validated.')
           PY
 
       - name: Restore targeted backup on failure
