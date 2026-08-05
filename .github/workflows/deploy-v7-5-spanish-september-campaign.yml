@@ -78,7 +78,7 @@ jobs:
           set -euo pipefail
           python3 scripts/v75-spanish-september-campaign.py live 2>&1 | tee v75-update.log
           grep -Fq 'Golf, Atlántico y una casa privada para disfrutar juntos.' live/off-season/es/index.html
-          grep -Fq 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa.' live/off-season/es/index.html
+          grep -Fq 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre.' live/off-season/es/index.html
           grep -Fq '2.226 €' live/off-season/es/index.html
           ! grep -Fq '371 € por adulto' live/off-season/es/index.html
           ! grep -Fq '26 de septiembre – 3 de octubre' live/off-season/es/index.html
@@ -183,6 +183,10 @@ jobs:
           assert '371 € por adulto' not in page.get_text(' ', strip=True)
           assert '26 de septiembre – 3 de octubre' not in page.get_text(' ', strip=True)
           assert 'Llegadas flexibles desde el 12 de septiembre' in page.get_text(' ', strip=True)
+          global_offer = page.select_one('[data-site-global-offer]')
+          assert global_offer
+          assert 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre.' in global_offer.get_text(' ', strip=True)
+          assert global_offer.select_one('.site-autumn-offer__cta').get('href') == '/es/reservation.html'
           for block in page.find_all('script', attrs={'type': 'application/ld+json'}):
               payload = json.loads(block.string or block.get_text())
               assert all(
