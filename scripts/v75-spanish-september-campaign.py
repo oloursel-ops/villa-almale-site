@@ -357,7 +357,7 @@ def patch_spanish_landing(path: Path) -> None:
     assert "2.226 €" in check.get_text(" ", strip=True)
     assert "371 € por adulto" not in check.get_text(" ", strip=True)
     assert "26 de septiembre – 3 de octubre" not in check.get_text(" ", strip=True)
-    assert "Flexibilidad desde el 12 de septiembre" in check.get_text(" ", strip=True)
+    assert "Llegadas flexibles desde el 12 de septiembre" in check.get_text(" ", strip=True)
     assert len(check.select(".hero-actions a")) == 2
     assert not any(
         "a class=" in str(node)
