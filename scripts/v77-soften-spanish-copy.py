@@ -182,18 +182,37 @@ def patch(path: Path) -> None:
         "practical notice copy",
     )
 
-    fireplace_answer = None
+    fireplace_details = None
     for details in soup.select("section#faq details"):
         summary = details.find("summary")
         if summary and summary.get_text(" ", strip=True) == "¿Se puede utilizar la chimenea?":
-            fireplace_answer = details.find("p")
+            fireplace_details = details
             break
+        if summary and summary.get_text(" ", strip=True) == "¿Cómo se calienta la casa en las noches frescas?":
+            fireplace_details = details
+            break
+    if fireplace_details is None:
+        raise RuntimeError("Fireplace FAQ is missing")
     set_text(
-        fireplace_answer,
+        fireplace_details.find("summary"),
+        "¿Se puede utilizar la chimenea?",
+        "¿Cómo se calienta la casa en las noches frescas?",
+        "fireplace FAQ question",
+    )
+    fireplace_answer = fireplace_details.find("p")
+    current_fireplace_answer = fireplace_answer.get_text(" ", strip=True) if fireplace_answer else ""
+    final_fireplace_answer = (
+        "El salón dispone de un insert de leña funcional y la leña se guarda en el garaje. "
+        "Tres aparatos portátiles completan el confort en algunas estancias; la casa no tiene calefacción central."
+    )
+    accepted_fireplace_answers = {
         "Sí. El salón dispone de un insert de leña funcional y la leña se guarda en el garaje. Es un complemento de confort, no una calefacción integral.",
         "Sí. El salón dispone de un insert de leña funcional y la leña se guarda en el garaje. Aporta un ambiente acogedor en las noches más frescas.",
-        "fireplace FAQ answer",
-    )
+        final_fireplace_answer,
+    }
+    if fireplace_answer is None or current_fireplace_answer not in accepted_fireplace_answers:
+        raise RuntimeError(f"Unexpected fireplace FAQ answer: {current_fireplace_answer!r}")
+    fireplace_answer.string = final_fireplace_answer
 
     climate_source = soup.select_one("#clima-septiembre-octubre .es-climate-source")
     replace_text_node(
@@ -223,7 +242,8 @@ def patch(path: Path) -> None:
         "Una estancia sencilla de organizar.",
         "La villa, a vuestro ritmo",
         "Actividades a la carta.",
-        "Aporta un ambiente acogedor en las noches más frescas.",
+        "¿Cómo se calienta la casa en las noches frescas?",
+        "Tres aparatos portátiles completan el confort en algunas estancias",
     )
     defensive_phrases = (
         "ofrece únicamente alojamiento",
