@@ -1,5 +1,5 @@
-name: Deploy Villa Almale V7.5 Spanish September campaign
-run-name: Deploy and verify Villa Almale V7.5 — Spanish landing page, analytics markers and logo routes
+name: Deploy Villa Almale V7.6 Spanish themed campaign
+run-name: Deploy and verify Villa Almale V7.6 — two-line banner and themed Spanish landing page
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       - scripts/v75-spanish-september-campaign.py
 
 concurrency:
-  group: villa-almale-v7-5-production
+  group: villa-almale-v7-6-production
   cancel-in-progress: false
 
 permissions:
@@ -72,13 +72,19 @@ jobs:
           while IFS= read -r file; do test -s "before/$file"; done < manifest.txt
           tar -czf "villa-almale-before-v75-${GITHUB_RUN_ID}.tar.gz" -C before .
 
-      - name: Apply and validate V7.5
+      - name: Apply and validate V7.6
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/v75-spanish-september-campaign.py live 2>&1 | tee v75-update.log
-          grep -Fq 'Golf, Atlántico y una casa privada para disfrutar juntos.' live/off-season/es/index.html
-          grep -Fq 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre.' live/off-season/es/index.html
+          grep -Fq 'Una villa privada para disfrutar la Costa de la Luz a tu ritmo.' live/off-season/es/index.html
+          grep -Fq 'class="es-promo-main">Disponibilidad en septiembre y octubre' live/off-season/es/index.html
+          grep -Fq 'class="es-promo-detail">Desde 2.226 € / 7 noches · villa completa · llegadas flexibles desde el 12/09' live/off-season/es/index.html
+          grep -Fq 'id="villa"' live/off-season/es/index.html
+          grep -Fq 'id="beach"' live/off-season/es/index.html
+          grep -Fq 'id="golf"' live/off-season/es/index.html
+          grep -Fq 'id="nautical"' live/off-season/es/index.html
+          grep -Fq 'id="tourism"' live/off-season/es/index.html
           grep -Fq '2.226 €' live/off-season/es/index.html
           ! grep -Fq '371 € por adulto' live/off-season/es/index.html
           ! grep -Fq '26 de septiembre – 3 de octubre' live/off-season/es/index.html
@@ -150,7 +156,7 @@ jobs:
             return 1
           }
           : > public-verification.log
-          fetch_until 'https://villanuevoportil.com/off-season/es/' 'Golf, Atlántico y una casa privada para disfrutar juntos.' public/off-season/es/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/es/' 'Una villa privada para disfrutar la Costa de la Luz a tu ritmo.' public/off-season/es/index.html
           fetch_until 'https://villanuevoportil.com/off-season/fr/' 'class="brand brand-official" href="/"' public/off-season/fr/index.html
           fetch_until 'https://villanuevoportil.com/off-season/' 'class="brand brand-official" href="/en/"' public/off-season/index.html
 
@@ -170,12 +176,19 @@ jobs:
               assert brand and brand.get('href') == home, filename
 
           page = BeautifulSoup(Path('public/off-season/es/index.html').read_text(encoding='utf-8'), 'html.parser')
-          assert page.find('h1').get_text(' ', strip=True) == 'Golf, Atlántico y una casa privada para disfrutar juntos.'
+          assert page.find('h1').get_text(' ', strip=True) == 'Una villa privada para disfrutar la Costa de la Luz a tu ritmo.'
           assert len(page.select('.es-photo-grid img')) == 6
           assert len(page.select('.es-campaign-hero-proof span')) == 3
           assert len(page.select('.es-direct-trust')) == 1
           assert not page.select_one('.es-september-offer')
           assert len(page.select('.hero-facts .hero-fact')) == 4
+          assert len(page.select('.es-theme-section')) == 5
+          theme_ids = ('villa', 'beach', 'golf', 'nautical', 'tourism')
+          for theme_id in theme_ids:
+              assert page.select_one(f'section#{theme_id}.es-theme-section')
+          source = str(page)
+          positions = [source.index(f'id="{theme_id}"') for theme_id in theme_ids]
+          assert positions == sorted(positions)
           assert page.select_one('[data-analytics-event="special_offer_click"]')
           assert page.select_one('[data-analytics-event="booking_click"]')
           assert page.select_one('[data-analytics-event="whatsapp_click"]')
@@ -185,8 +198,14 @@ jobs:
           assert 'Llegadas flexibles desde el 12 de septiembre' in page.get_text(' ', strip=True)
           global_offer = page.select_one('[data-site-global-offer]')
           assert global_offer
-          assert 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre.' in global_offer.get_text(' ', strip=True)
+          assert global_offer.select_one('.es-promo-main').get_text(' ', strip=True) == 'Disponibilidad en septiembre y octubre'
+          assert 'Desde 2.226 € / 7 noches · villa completa · llegadas flexibles desde el 12/09' in global_offer.select_one('.es-promo-detail').get_text(' ', strip=True)
           assert global_offer.select_one('.site-autumn-offer__cta').get('href') == '/es/reservation.html'
+          thematic_copy = BeautifulSoup(str(page.body), 'html.parser')
+          for selector in ('header', 'footer', 'section#golf', 'script', 'style'):
+              for node in thematic_copy.select(selector):
+                  node.decompose()
+          assert 'golf' not in thematic_copy.get_text(' ', strip=True).lower()
           for block in page.find_all('script', attrs={'type': 'application/ld+json'}):
               payload = json.loads(block.string or block.get_text())
               assert all(
@@ -194,7 +213,7 @@ jobs:
                   or node.get('@id') != 'https://villanuevoportil.com/off-season/es/#offer-2026-09-26'
                   for node in payload.get('@graph', [])
               )
-          print('Public V7.5 Spanish landing page, analytics markers and logo routes validated.')
+          print('Public V7.6 two-line banner, themed Spanish landing page, analytics markers and logo routes validated.')
           PY
 
           for url in 'https://villanuevoportil.com/' 'https://villanuevoportil.com/en/' 'https://villanuevoportil.com/es/'; do
@@ -256,14 +275,14 @@ jobs:
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `[automation] Villa Almale V7.5 Spanish September campaign — ${status}`,
+              title: `[automation] Villa Almale V7.6 Spanish themed campaign — ${status}`,
               body: [
                 `Workflow status: **${status}**`,
                 `Run ID: ${context.runId}`,
                 `Commit: ${context.sha}`,
                 `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
                 status === 'success'
-                  ? 'The Spanish campaign landing page and the three off-season logo destinations were backed up, patched, uploaded, compared byte for byte and verified publicly.'
+                  ? 'The two-line promotional banner, five themed Spanish content sections and the three off-season logo destinations were backed up, patched, uploaded, compared byte for byte and verified publicly.'
                   : `Failure diagnostic:\n\n\`\`\`text\n${details || 'No diagnostic file.'}\n\`\`\``
               ].join('\n\n')
             });
