@@ -1,0 +1,162 @@
+name: Deploy Villa Almale V7.7 warmer Spanish copy
+run-name: Deploy and verify Villa Almale V7.7 — warmer, less defensive Spanish landing-page copy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-7-soften-spanish-copy.yml
+      - scripts/v77-soften-spanish-copy.py
+
+concurrency:
+  group: villa-almale-v7-7-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Backup, revise, deploy and verify the Spanish landing page
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v77-soften-spanish-copy.py
+
+      - name: Download and archive the current production page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/es before/off-season/es
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp live/off-season/es/index.html before/off-season/es/index.html
+          test -s before/off-season/es/index.html
+          tar -czf "villa-almale-before-v77-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7.7
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v77-soften-spanish-copy.py live/off-season/es/index.html 2>&1 | tee v77-update.log
+          grep -Fq 'Golf a pie y varios campos para cambiar de recorrido.' live/off-season/es/index.html
+          grep -Fq 'La Ría, el mar y la Flecha del Rompido desde el agua.' live/off-season/es/index.html
+          grep -Fq 'Una estancia sencilla de organizar.' live/off-season/es/index.html
+          grep -Fq 'Actividades a la carta.' live/off-season/es/index.html
+
+      - name: Upload the targeted production page
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            echo 'bye'
+          } > upload-v77.lftp
+          lftp -f upload-v77.lftp 2>&1 | tee upload-v77.log
+
+      - name: Compare the remote page byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season/es
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          tar -czf "villa-almale-after-v77-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify the public page
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/es
+          for attempt in $(seq 1 18); do
+            if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/es/?v77check=${GITHUB_RUN_ID}-${attempt}" -o public/off-season/es/index.html \
+              && grep -Fq 'Una estancia sencilla de organizar.' public/off-season/es/index.html; then
+              echo "Public V7.7 marker verified on attempt ${attempt}" | tee public-verification.log
+              break
+            fi
+            sleep 5
+          done
+          grep -Fq 'Golf a pie y varios campos para cambiar de recorrido.' public/off-season/es/index.html
+          grep -Fq 'La Ría, el mar y la Flecha del Rompido desde el agua.' public/off-season/es/index.html
+          grep -Fq 'Una estancia sencilla de organizar.' public/off-season/es/index.html
+          ! grep -Fq 'no constituye un paquete' public/off-season/es/index.html
+
+      - name: Restore the targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/es/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v77-${{ github.run_id }}
+          path: |
+            villa-almale-before-v77-${{ github.run_id }}.tar.gz
+            villa-almale-after-v77-${{ github.run_id }}.tar.gz
+            v77-update.log
+            public-verification.log
+            upload-v77.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
