@@ -1,0 +1,263 @@
+name: Deploy Villa Almale V7.5 Spanish September campaign
+run-name: Deploy and verify Villa Almale V7.5 — Spanish landing page, analytics markers and logo routes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-5-spanish-september-campaign.yml
+      - scripts/v75-spanish-september-campaign.py
+
+concurrency:
+  group: villa-almale-v7-5-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify the Spanish campaign landing page
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v75-spanish-september-campaign.py
+          cat > manifest.txt <<'MANIFEST'
+          off-season/index.html
+          off-season/fr/index.html
+          off-season/es/index.html
+          MANIFEST
+          test "$(grep -cve '^$' manifest.txt)" -eq 3
+
+      - name: Download and archive current production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live before
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "live/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -a live/. before/
+          while IFS= read -r file; do test -s "before/$file"; done < manifest.txt
+          tar -czf "villa-almale-before-v75-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V7.5
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v75-spanish-september-campaign.py live 2>&1 | tee v75-update.log
+          grep -Fq 'Golf, Atlántico y una casa privada para disfrutar juntos.' live/off-season/es/index.html
+          grep -Fq '26 de septiembre – 3 de octubre' live/off-season/es/index.html
+          grep -Fq '2.226 €' live/off-season/es/index.html
+          grep -Fq '371 € por adulto' live/off-season/es/index.html
+          grep -Fq 'Flexibilidad desde el 12 de septiembre' live/off-season/es/index.html
+          grep -Fq 'data-analytics-event="special_offer_click"' live/off-season/es/index.html
+          grep -Fq 'data-analytics-event="booking_click"' live/off-season/es/index.html
+          grep -Fq 'data-analytics-event="whatsapp_click"' live/off-season/es/index.html
+          grep -Fq '"price":"2226.00"' live/off-season/es/index.html
+          grep -Fq 'class="brand brand-official" href="/"' live/off-season/fr/index.html
+          grep -Fq 'class="brand brand-official" href="/en/"' live/off-season/index.html
+          grep -Fq 'class="brand brand-official" href="/es/"' live/off-season/es/index.html
+
+      - name: Upload targeted production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$(dirname "$file")" "live/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > upload-v75.lftp
+          lftp -f upload-v75.lftp 2>&1 | tee upload-v75.log
+
+      - name: Compare remote pages byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              mkdir -p "after/$(dirname "$file")"
+              printf 'get %q -o %q;\n' "$DEPLOY_PATH/$file" "after/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          while IFS= read -r file; do cmp "live/$file" "after/$file"; done < manifest.txt
+          tar -czf "villa-almale-after-v75-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public pages and destinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/es public/off-season/fr public/off-season
+          fetch_until() {
+            local url="$1" marker="$2" output="$3"
+            local attempt
+            for attempt in $(seq 1 18); do
+              if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?v75check=${GITHUB_RUN_ID}-${attempt}" -o "$output" && grep -Fq "$marker" "$output"; then
+                printf '%s verified on attempt %s\n' "$url" "$attempt" | tee -a public-verification.log
+                return 0
+              fi
+              sleep 5
+            done
+            echo "Timed out waiting for ${marker} at ${url}" >&2
+            return 1
+          }
+          : > public-verification.log
+          fetch_until 'https://villanuevoportil.com/off-season/es/' 'Golf, Atlántico y una casa privada para disfrutar juntos.' public/off-season/es/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/fr/' 'class="brand brand-official" href="/"' public/off-season/fr/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/' 'class="brand brand-official" href="/en/"' public/off-season/index.html
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          expected_homes = {
+              'public/off-season/index.html': '/en/',
+              'public/off-season/fr/index.html': '/',
+              'public/off-season/es/index.html': '/es/',
+          }
+          for filename, home in expected_homes.items():
+              soup = BeautifulSoup(Path(filename).read_text(encoding='utf-8'), 'html.parser')
+              brand = soup.select_one('header.site-header a.brand')
+              assert brand and brand.get('href') == home, filename
+
+          page = BeautifulSoup(Path('public/off-season/es/index.html').read_text(encoding='utf-8'), 'html.parser')
+          assert page.find('h1').get_text(' ', strip=True) == 'Golf, Atlántico y una casa privada para disfrutar juntos.'
+          assert len(page.select('.es-photo-grid img')) == 6
+          assert len(page.select('.es-campaign-hero-proof span')) == 3
+          assert len(page.select('.es-direct-trust')) == 1
+          assert len(page.select('.hero-facts .hero-fact')) == 4
+          assert page.select_one('[data-analytics-event="special_offer_click"]')
+          assert page.select_one('[data-analytics-event="booking_click"]')
+          assert page.select_one('[data-analytics-event="whatsapp_click"]')
+          assert '2.226 €' in page.get_text(' ', strip=True)
+          assert '371 € por adulto' in page.get_text(' ', strip=True)
+          assert 'Flexibilidad desde el 12 de septiembre' in page.get_text(' ', strip=True)
+          offer_found = False
+          for block in page.find_all('script', attrs={'type': 'application/ld+json'}):
+              payload = json.loads(block.string or block.get_text())
+              for node in payload.get('@graph', []):
+                  if node.get('@type') == 'Offer' and node.get('price') == '2226.00':
+                      offer_found = True
+          assert offer_found
+          print('Public V7.5 Spanish landing page, analytics markers and logo routes validated.')
+          PY
+
+          for url in 'https://villanuevoportil.com/' 'https://villanuevoportil.com/en/' 'https://villanuevoportil.com/es/'; do
+            status="$(curl --retry 3 --retry-delay 2 -sS -o /dev/null -w '%{http_code}' "$url")"
+            test "$status" = "200"
+            printf '%s returned %s\n' "$url" "$status" | tee -a public-verification.log
+          done
+
+      - name: Restore targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -d before ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            while IFS= read -r file; do
+              test -n "$file" || continue
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/$(dirname "$file")" "before/$file"
+            done < manifest.txt
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v75-${{ github.run_id }}
+          path: |
+            villa-almale-before-v75-${{ github.run_id }}.tar.gz
+            villa-almale-after-v75-${{ github.run_id }}.tar.gz
+            v75-update.log
+            public-verification.log
+            upload-v75.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Report result
+        if: ${{ always() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const status = '${{ job.status }}';
+            const files = ['v75-update.log','public-verification.log','upload-v75.log','rollback.log'];
+            const details = files.filter(fs.existsSync).map(f => `${f}:\n${fs.readFileSync(f,'utf8').slice(-7000)}`).join('\n\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `[automation] Villa Almale V7.5 Spanish September campaign — ${status}`,
+              body: [
+                `Workflow status: **${status}**`,
+                `Run ID: ${context.runId}`,
+                `Commit: ${context.sha}`,
+                `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                status === 'success'
+                  ? 'The Spanish campaign landing page and the three off-season logo destinations were backed up, patched, uploaded, compared byte for byte and verified publicly.'
+                  : `Failure diagnostic:\n\n\`\`\`text\n${details || 'No diagnostic file.'}\n\`\`\``
+              ].join('\n\n')
+            });
