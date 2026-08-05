@@ -320,15 +320,15 @@ def patch_spanish_landing(path: Path) -> None:
     global_offer = soup.select_one("[data-site-global-offer]")
     if global_offer:
         global_offer["data-offer-version"] = "september-2026-es"
-        global_offer["aria-label"] = "Oferta directa del 26 de septiembre"
+        global_offer["aria-label"] = "Disponibilidad en septiembre y octubre"
         global_offer.select_one(".site-autumn-offer__text").string = (
-            "Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa."
+            "Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre."
         )
         global_cta = global_offer.select_one(".site-autumn-offer__cta")
         global_cta.string = "Ver disponibilidad y precios →"
         global_cta["href"] = BOOKING
         global_cta["data-analytics-event"] = "special_offer_click"
-        global_cta["data-offer-id"] = "september-2026-es-26"
+        global_cta["data-offer-id"] = "september-october-2026-es"
         global_script = soup.find(id="villa-almale-v7-4-global-actions-script")
         if global_script and global_script.string:
             global_script.string = global_script.string.replace(
