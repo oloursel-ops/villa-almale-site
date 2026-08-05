@@ -78,14 +78,14 @@ jobs:
           set -euo pipefail
           python3 scripts/v75-spanish-september-campaign.py live 2>&1 | tee v75-update.log
           grep -Fq 'Golf, Atlántico y una casa privada para disfrutar juntos.' live/off-season/es/index.html
-          grep -Fq '26 de septiembre – 3 de octubre' live/off-season/es/index.html
+          grep -Fq 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre.' live/off-season/es/index.html
           grep -Fq '2.226 €' live/off-season/es/index.html
-          grep -Fq '371 € por adulto' live/off-season/es/index.html
-          grep -Fq 'Flexibilidad desde el 12 de septiembre' live/off-season/es/index.html
+          ! grep -Fq '371 € por adulto' live/off-season/es/index.html
+          ! grep -Fq '26 de septiembre – 3 de octubre' live/off-season/es/index.html
+          grep -Fq 'Llegadas flexibles desde el 12 de septiembre' live/off-season/es/index.html
           grep -Fq 'data-analytics-event="special_offer_click"' live/off-season/es/index.html
           grep -Fq 'data-analytics-event="booking_click"' live/off-season/es/index.html
           grep -Fq 'data-analytics-event="whatsapp_click"' live/off-season/es/index.html
-          grep -Fq '"price":"2226.00"' live/off-season/es/index.html
           grep -Fq 'class="brand brand-official" href="/"' live/off-season/fr/index.html
           grep -Fq 'class="brand brand-official" href="/en/"' live/off-season/index.html
           grep -Fq 'class="brand brand-official" href="/es/"' live/off-season/es/index.html
@@ -174,20 +174,26 @@ jobs:
           assert len(page.select('.es-photo-grid img')) == 6
           assert len(page.select('.es-campaign-hero-proof span')) == 3
           assert len(page.select('.es-direct-trust')) == 1
+          assert not page.select_one('.es-september-offer')
           assert len(page.select('.hero-facts .hero-fact')) == 4
           assert page.select_one('[data-analytics-event="special_offer_click"]')
           assert page.select_one('[data-analytics-event="booking_click"]')
           assert page.select_one('[data-analytics-event="whatsapp_click"]')
           assert '2.226 €' in page.get_text(' ', strip=True)
-          assert '371 € por adulto' in page.get_text(' ', strip=True)
-          assert 'Flexibilidad desde el 12 de septiembre' in page.get_text(' ', strip=True)
-          offer_found = False
+          assert '371 € por adulto' not in page.get_text(' ', strip=True)
+          assert '26 de septiembre – 3 de octubre' not in page.get_text(' ', strip=True)
+          assert 'Llegadas flexibles desde el 12 de septiembre' in page.get_text(' ', strip=True)
+          global_offer = page.select_one('[data-site-global-offer]')
+          assert global_offer
+          assert 'Disponibilidad en septiembre y octubre — desde 2.226 € por 7 noches para la villa completa · llegadas flexibles desde el 12 de septiembre.' in global_offer.get_text(' ', strip=True)
+          assert global_offer.select_one('.site-autumn-offer__cta').get('href') == '/es/reservation.html'
           for block in page.find_all('script', attrs={'type': 'application/ld+json'}):
               payload = json.loads(block.string or block.get_text())
-              for node in payload.get('@graph', []):
-                  if node.get('@type') == 'Offer' and node.get('price') == '2226.00':
-                      offer_found = True
-          assert offer_found
+              assert all(
+                  not isinstance(node, dict)
+                  or node.get('@id') != 'https://villanuevoportil.com/off-season/es/#offer-2026-09-26'
+                  for node in payload.get('@graph', [])
+              )
           print('Public V7.5 Spanish landing page, analytics markers and logo routes validated.')
           PY
 
