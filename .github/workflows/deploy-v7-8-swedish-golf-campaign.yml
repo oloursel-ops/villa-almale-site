@@ -1,0 +1,223 @@
+name: Deploy Villa Almale V7.8 Swedish golf campaign
+run-name: Deploy and verify Villa Almale V7.8 — Swedish golf campaign landing page
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-8-swedish-golf-campaign.yml
+      - scripts/v78-swedish-golf-campaign.py
+
+concurrency:
+  group: villa-almale-v7-8-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Backup, build, deploy and verify the Swedish campaign page
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v78-swedish-golf-campaign.py
+
+      - name: Download and archive the current production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/fr live/off-season/es live/off-season/sv
+          mkdir -p before/off-season/fr before/off-season/es before/off-season/sv
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "live/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            echo 'bye'
+          } > download-core.lftp
+          lftp -f download-core.lftp
+          cp live/off-season/index.html before/off-season/index.html
+          cp live/off-season/fr/index.html before/off-season/fr/index.html
+          cp live/off-season/es/index.html before/off-season/es/index.html
+          test -s before/off-season/index.html
+          test -s before/off-season/fr/index.html
+          test -s before/off-season/es/index.html
+
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 1;'
+            echo 'set net:timeout 15;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/sv/index.html" "before/off-season/sv/index.html"
+            echo 'bye'
+          } > download-existing-sv.lftp
+          if lftp -f download-existing-sv.lftp; then
+            touch before-sv-existed
+            cp before/off-season/sv/index.html live/off-season/sv/index.html
+          else
+            rm -f before/off-season/sv/index.html live/off-season/sv/index.html
+          fi
+
+          tar -czf "villa-almale-before-v78-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Build and validate V7.8
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v78-swedish-golf-campaign.py live 2>&1 | tee v78-update.log
+          grep -Fq 'En hel villa för golfveckan på Costa de la Luz.' live/off-season/sv/index.html
+          grep -Fq 'Hela villan från 2 226 € / 7 nätter' live/off-season/sv/index.html
+          grep -Fq 'Golf Nuevo Portil till fots.' live/off-season/sv/index.html
+          grep -Fq '268 soltimmar' live/off-season/sv/index.html
+          grep -Fq 'data-analytics-event="booking_click"' live/off-season/sv/index.html
+          grep -Fq 'data-analytics-event="whatsapp_click"' live/off-season/sv/index.html
+          for page in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html live/off-season/sv/index.html; do
+            grep -Fq 'hreflang="sv"' "$page"
+            grep -Fq '>Svenska</a>' "$page"
+          done
+
+      - name: Upload the four targeted production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'mkdir -p %q;\n' "$DEPLOY_PATH/off-season/sv"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "live/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/sv" "live/off-season/sv/index.html"
+            echo 'bye'
+          } > upload-v78.lftp
+          lftp -f upload-v78.lftp 2>&1 | tee upload-v78.log
+
+      - name: Compare the remote pages byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season/fr after/off-season/es after/off-season/sv
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "after/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/sv/index.html" "after/off-season/sv/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          cmp live/off-season/fr/index.html after/off-season/fr/index.html
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          cmp live/off-season/sv/index.html after/off-season/sv/index.html
+          tar -czf "villa-almale-after-v78-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify the public pages and booking destination
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/fr public/off-season/es public/off-season/sv
+          for attempt in $(seq 1 18); do
+            if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/sv/?v78check=${GITHUB_RUN_ID}-${attempt}" -o public/off-season/sv/index.html \
+              && grep -Fq 'En hel villa för golfveckan på Costa de la Luz.' public/off-season/sv/index.html; then
+              echo "Public Swedish V7.8 marker verified on attempt ${attempt}" | tee public-verification.log
+              break
+            fi
+            sleep 5
+          done
+          grep -Fq 'Hela villan från 2 226 € / 7 nätter' public/off-season/sv/index.html
+          grep -Fq 'Golf Nuevo Portil till fots.' public/off-season/sv/index.html
+          grep -Fq 'href="/en/reservation.html"' public/off-season/sv/index.html
+          grep -Fq 'data-analytics-event="booking_click"' public/off-season/sv/index.html
+          grep -Fq 'data-analytics-event="whatsapp_click"' public/off-season/sv/index.html
+          test "$(grep -o 'site-floating-action--whatsapp' public/off-season/sv/index.html | wc -l)" -eq 1
+          test "$(grep -o 'site-floating-action--booking' public/off-season/sv/index.html | wc -l)" -eq 1
+
+          curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/?v78check=${GITHUB_RUN_ID}" -o public/off-season/index.html
+          curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/fr/?v78check=${GITHUB_RUN_ID}" -o public/off-season/fr/index.html
+          curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/es/?v78check=${GITHUB_RUN_ID}" -o public/off-season/es/index.html
+          for page in public/off-season/index.html public/off-season/fr/index.html public/off-season/es/index.html; do
+            grep -Fq 'hreflang="sv"' "$page"
+            grep -Fq '>Svenska</a>' "$page"
+          done
+
+          curl --retry 3 --retry-delay 2 -fsSL "https://villanuevoportil.com/en/reservation.html" -o /dev/null
+          echo 'Swedish landing page, language integration, analytics hooks and booking destination verified.' >> public-verification.log
+
+      - name: Restore the targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "before/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            if [ -f before-sv-existed ] && [ -f before/off-season/sv/index.html ]; then
+              printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/sv" "before/off-season/sv/index.html"
+            else
+              printf 'rm -f %q;\n' "$DEPLOY_PATH/off-season/sv/index.html"
+            fi
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v78-${{ github.run_id }}
+          path: |
+            villa-almale-before-v78-${{ github.run_id }}.tar.gz
+            villa-almale-after-v78-${{ github.run_id }}.tar.gz
+            v78-update.log
+            public-verification.log
+            upload-v78.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
