@@ -2,6 +2,7 @@ name: Deploy Villa Almale V8.0 off-season banner and environment photos
 run-name: Deploy and verify one multilingual price banner and Atlantic setting photos
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
