@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from urllib.parse import quote
 
 MARKER = "villa-almale-whatsapp-float-v1"
+CANONICAL_MARKER = "site-floating-action--whatsapp"
 PHONE = "33687174067"
 
 MESSAGES = {
@@ -122,8 +124,46 @@ HTML = (
 )
 
 
+LEGACY_BLOCKS = (
+    re.compile(
+        rf'<style\b[^>]*\bid=["\']{re.escape(MARKER)}-style["\'][^>]*>.*?</style\s*>',
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        rf'<a\b[^>]*\bclass=["\'][^"\']*\b{re.escape(MARKER)}\b[^"\']*["\'][^>]*>.*?</a\s*>',
+        re.IGNORECASE | re.DOTALL,
+    ),
+    re.compile(
+        rf'<script\b[^>]*\bid=["\']{re.escape(MARKER)}-script["\'][^>]*>.*?</script\s*>',
+        re.IGNORECASE | re.DOTALL,
+    ),
+)
+
+
+def remove_legacy_button(text: str) -> tuple[str, int]:
+    removed = 0
+    for pattern in LEGACY_BLOCKS:
+        text, count = pattern.subn("", text)
+        removed += count
+    return text, removed
+
+
 def patch(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
+
+    # The V7.4 shared action bar supersedes the former standalone WhatsApp
+    # button. When the canonical action exists, make this older workflow a
+    # cleanup operation so rerunning it can never recreate the duplicate.
+    if CANONICAL_MARKER in text:
+        text, removed = remove_legacy_button(text)
+        if MARKER in text:
+            raise SystemExit("Legacy WhatsApp fragments remain after cleanup.")
+        if text.count(f'class="site-floating-action {CANONICAL_MARKER}"') != 1:
+            raise SystemExit("Expected exactly one canonical WhatsApp action.")
+        path.write_text(text, encoding="utf-8")
+        print(f"Removed {removed} legacy WhatsApp fragment(s); canonical action retained.")
+        return
+
     if MARKER in text:
         print("WhatsApp marker already present; no duplicate inserted.")
         return
