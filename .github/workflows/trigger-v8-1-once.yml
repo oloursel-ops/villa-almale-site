@@ -3,7 +3,7 @@ run-name: Dispatch V8.1 production deployment and disable this trigger
 
 on:
   schedule:
-    - cron: '28 * * * *'
+    - cron: '31 * * * *'
   workflow_dispatch:
 
 permissions:
