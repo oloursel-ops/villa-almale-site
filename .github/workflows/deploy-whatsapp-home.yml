@@ -1,5 +1,5 @@
-name: Deploy WhatsApp button to Villa Almale homepage
-run-name: Add and verify the Villa Almale WhatsApp contact button
+name: Keep one WhatsApp button on Villa Almale homepage
+run-name: Remove the legacy homepage WhatsApp duplicate and verify the canonical action
 
 on:
   push:
@@ -64,16 +64,16 @@ jobs:
           cp live/index.html before/index.html
           tar -czf "villa-almale-home-before-whatsapp-${GITHUB_RUN_ID}.tar.gz" -C before .
 
-      - name: Add and validate WhatsApp button
+      - name: Remove legacy duplicate and validate WhatsApp action
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/add-whatsapp-home.py live/index.html | tee whatsapp-update.log
-          grep -Fq 'villa-almale-whatsapp-float-v1' live/index.html
+          grep -Fq 'site-floating-action--whatsapp' live/index.html
           grep -Fq 'https://wa.me/33687174067' live/index.html
-          grep -Fq 'data-whatsapp-contact="villa-almale"' live/index.html
-          test "$(grep -Fo 'data-whatsapp-contact="villa-almale"' live/index.html | wc -l)" -eq 1
-          test "$(grep -Fo 'id="villa-almale-whatsapp-float-v1-style"' live/index.html | wc -l)" -eq 1
+          test "$(grep -Fo 'class="site-floating-action site-floating-action--whatsapp"' live/index.html | wc -l)" -eq 1
+          ! grep -Fq 'villa-almale-whatsapp-float-v1' live/index.html
+          ! grep -Fq 'data-whatsapp-contact="villa-almale"' live/index.html
 
       - name: Upload targeted homepage
         shell: bash
@@ -116,10 +116,10 @@ jobs:
           verified=0
           for attempt in $(seq 1 24); do
             if curl -L --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/?whatsappcheck=${GITHUB_RUN_ID}-${attempt}" -o public-home.html \
-              && grep -Fq 'villa-almale-whatsapp-float-v1' public-home.html \
+              && grep -Fq 'site-floating-action--whatsapp' public-home.html \
               && grep -Fq 'https://wa.me/33687174067' public-home.html \
-              && grep -Fq 'data-whatsapp-contact="villa-almale"' public-home.html; then
-              echo "Public WhatsApp button verified on attempt ${attempt}." | tee -a public-verification.log
+              && ! grep -Fq 'villa-almale-whatsapp-float-v1' public-home.html; then
+              echo "Single public WhatsApp action verified on attempt ${attempt}." | tee -a public-verification.log
               verified=1
               break
             fi
@@ -127,8 +127,9 @@ jobs:
             sleep 5
           done
           test "$verified" -eq 1
-          test "$(grep -Fo 'data-whatsapp-contact="villa-almale"' public-home.html | wc -l)" -eq 1
-          echo 'Homepage contains one WhatsApp button linked to +33 6 87 17 40 67.' >> public-verification.log
+          test "$(grep -Fo 'class="site-floating-action site-floating-action--whatsapp"' public-home.html | wc -l)" -eq 1
+          ! grep -Fq 'villa-almale-whatsapp-float-v1' public-home.html
+          echo 'Homepage contains one canonical WhatsApp button linked to +33 6 87 17 40 67.' >> public-verification.log
 
       - name: Restore the targeted backup on failure
         if: ${{ failure() }}
