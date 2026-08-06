@@ -1,0 +1,221 @@
+name: Deploy Villa Almale V8.0 off-season banner and environment photos
+run-name: Deploy and verify one multilingual price banner and Atlantic setting photos
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v8-0-offseason-banner-environment.yml
+      - scripts/v80-offseason-banner-environment.py
+      - assets/v8.0-offseason/ria-piedras-plage-vue-aerienne.webp.b64
+      - assets/v8.0-offseason/plage-atlantique-coucher-soleil.webp.b64
+
+concurrency:
+  group: villa-almale-v8-0-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Backup, patch, deploy and verify the three off-season pages
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v80-offseason-banner-environment.py
+          mkdir -p assets/images/current
+          base64 --decode assets/v8.0-offseason/ria-piedras-plage-vue-aerienne.webp.b64 > assets/images/current/ria-piedras-plage-vue-aerienne.webp
+          base64 --decode assets/v8.0-offseason/plage-atlantique-coucher-soleil.webp.b64 > assets/images/current/plage-atlantique-coucher-soleil.webp
+          test -s assets/images/current/ria-piedras-plage-vue-aerienne.webp
+          test -s assets/images/current/plage-atlantique-coucher-soleil.webp
+
+      - name: Download and archive current production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/fr live/off-season/es before/off-season/fr before/off-season/es
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "live/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp live/off-season/index.html before/off-season/index.html
+          cp live/off-season/fr/index.html before/off-season/fr/index.html
+          cp live/off-season/es/index.html before/off-season/es/index.html
+          test -s before/off-season/index.html
+          test -s before/off-season/fr/index.html
+          test -s before/off-season/es/index.html
+          tar -czf "villa-almale-before-v80-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply and validate V8.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v80-offseason-banner-environment.py live 2>&1 | tee v80-update.log
+          for file in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html; do
+            grep -Fq 'data-offseason-promo="september-october-2026"' "$file"
+            grep -Fq 'id="atlantic-setting"' "$file"
+            grep -Fq '/assets/images/current/ria-piedras-plage-vue-aerienne.webp' "$file"
+            grep -Fq '/assets/images/current/plage-atlantique-coucher-soleil.webp' "$file"
+          done
+          grep -Fq 'From €2,226 / 7 nights' live/off-season/index.html
+          grep -Fq 'À partir de 2 226 € / 7 nuits' live/off-season/fr/index.html
+          grep -Fq 'Desde 2.226 € / 7 noches' live/off-season/es/index.html
+
+      - name: Upload targeted pages and images
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "live/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/assets/images/current" "assets/images/current/ria-piedras-plage-vue-aerienne.webp"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/assets/images/current" "assets/images/current/plage-atlantique-coucher-soleil.webp"
+            echo 'bye'
+          } > upload-v80.lftp
+          lftp -f upload-v80.lftp 2>&1 | tee upload-v80.log
+
+      - name: Compare remote files byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season/fr after/off-season/es after/assets/images/current
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "after/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/assets/images/current/ria-piedras-plage-vue-aerienne.webp" "after/assets/images/current/ria-piedras-plage-vue-aerienne.webp"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/assets/images/current/plage-atlantique-coucher-soleil.webp" "after/assets/images/current/plage-atlantique-coucher-soleil.webp"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          cmp live/off-season/fr/index.html after/off-season/fr/index.html
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          cmp assets/images/current/ria-piedras-plage-vue-aerienne.webp after/assets/images/current/ria-piedras-plage-vue-aerienne.webp
+          cmp assets/images/current/plage-atlantique-coucher-soleil.webp after/assets/images/current/plage-atlantique-coucher-soleil.webp
+          tar -czf "villa-almale-after-v80-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/fr public/off-season/es public/off-season
+          fetch_until() {
+            local url="$1" marker="$2" output="$3"
+            local attempt
+            for attempt in $(seq 1 18); do
+              if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?v80check=${GITHUB_RUN_ID}-${attempt}" -o "$output" && grep -Fq "$marker" "$output"; then
+                printf '%s verified on attempt %s\n' "$url" "$attempt" | tee -a public-verification.log
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          : > public-verification.log
+          fetch_until 'https://villanuevoportil.com/off-season/' 'From €2,226 / 7 nights' public/off-season/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/fr/' 'À partir de 2 226 € / 7 nuits' public/off-season/fr/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/es/' 'Desde 2.226 € / 7 noches' public/off-season/es/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          pages = {
+              'public/off-season/index.html': '/en/reservation.html',
+              'public/off-season/fr/index.html': '/reservation.html',
+              'public/off-season/es/index.html': '/es/reservation.html',
+          }
+          for filename, booking in pages.items():
+              soup = BeautifulSoup(Path(filename).read_text(encoding='utf-8'), 'html.parser')
+              assert len(soup.select('[data-autumn-offer]')) == 0, filename
+              assert len(soup.select('[data-whatsapp-contact="villa-almale-offseason"]')) == 0, filename
+              assert len(soup.select('[data-site-global-offer]')) == 1, filename
+              assert len(soup.select('.site-floating-actions .site-floating-action--whatsapp')) == 1, filename
+              assert len(soup.select('[data-offseason-promo="september-october-2026"]')) == 1, filename
+              assert len(soup.select('#atlantic-setting')) == 1, filename
+              assert len(soup.select('#atlantic-setting img')) == 2, filename
+              assert soup.select_one(f'[data-site-global-offer] a[href="{booking}"]'), filename
+              assert soup.select_one('img[src="/assets/images/current/ria-piedras-plage-vue-aerienne.webp"]'), filename
+              assert soup.select_one('img[src="/assets/images/current/plage-atlantique-coucher-soleil.webp"]'), filename
+          print('All three public off-season pages have one price banner and the approved environment photos.')
+          PY
+
+      - name: Restore page backups on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "before/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v80-${{ github.run_id }}
+          path: |
+            villa-almale-before-v80-${{ github.run_id }}.tar.gz
+            villa-almale-after-v80-${{ github.run_id }}.tar.gz
+            v80-update.log
+            public-verification.log
+            upload-v80.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
