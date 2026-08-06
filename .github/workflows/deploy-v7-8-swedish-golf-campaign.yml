@@ -163,8 +163,8 @@ jobs:
           grep -Fq 'href="/en/reservation.html"' public/off-season/sv/index.html
           grep -Fq 'data-analytics-event="booking_click"' public/off-season/sv/index.html
           grep -Fq 'data-analytics-event="whatsapp_click"' public/off-season/sv/index.html
-          test "$(grep -o 'site-floating-action--whatsapp' public/off-season/sv/index.html | wc -l)" -eq 1
-          test "$(grep -o 'site-floating-action--booking' public/off-season/sv/index.html | wc -l)" -eq 1
+          test "$(grep -o 'class="site-floating-action site-floating-action--whatsapp"' public/off-season/sv/index.html | wc -l)" -eq 1
+          test "$(grep -o 'class="site-floating-action site-floating-action--booking"' public/off-season/sv/index.html | wc -l)" -eq 1
 
           curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/?v78check=${GITHUB_RUN_ID}" -o public/off-season/index.html
           curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/fr/?v78check=${GITHUB_RUN_ID}" -o public/off-season/fr/index.html
