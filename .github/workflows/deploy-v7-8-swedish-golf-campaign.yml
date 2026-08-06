@@ -112,7 +112,9 @@ jobs:
             echo 'set net:timeout 30;'
             echo 'set sftp:auto-confirm yes;'
             printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
-            printf 'mkdir -p %q;\n' "$DEPLOY_PATH/off-season/sv"
+            echo 'set cmd:fail-exit no;'
+            printf 'mkdir %q;\n' "$DEPLOY_PATH/off-season/sv"
+            echo 'set cmd:fail-exit yes;'
             printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
             printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "live/off-season/fr/index.html"
             printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
