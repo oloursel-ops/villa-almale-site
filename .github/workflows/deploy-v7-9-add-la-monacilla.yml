@@ -1,0 +1,200 @@
+name: Deploy Villa Almale V7.9 La Monacilla
+run-name: Deploy and verify Villa Almale V7.9 - add La Monacilla to off-season pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v7-9-add-la-monacilla.yml
+      - scripts/v79-add-la-monacilla.py
+
+concurrency:
+  group: villa-almale-v7-9-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Backup, update, deploy and verify four off-season pages
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v79-add-la-monacilla.py
+
+      - name: Download and archive the current production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/fr live/off-season/es live/off-season/sv
+          mkdir -p before/off-season/fr before/off-season/es before/off-season/sv
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "live/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/sv/index.html" "live/off-season/sv/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -R live/off-season/. before/off-season/
+          for page in before/off-season/index.html before/off-season/fr/index.html before/off-season/es/index.html before/off-season/sv/index.html; do
+            test -s "$page"
+          done
+          tar -czf "villa-almale-before-v79-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Add La Monacilla and validate V7.9
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v79-add-la-monacilla.py live 2>&1 | tee v79-update.log
+          for page in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html live/off-season/sv/index.html; do
+            grep -Fq 'La Monacilla' "$page"
+            grep -Fq '18 km' "$page"
+            grep -Fq 'lamonacillagolf.com/en/' "$page"
+            test "$(grep -o 'class="course-card"' "$page" | wc -l)" -eq 5
+            test "$(grep -o 'lamonacillagolf.com/en/' "$page" | wc -l)" -eq 1
+          done
+
+      - name: Upload the four targeted production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "live/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/sv" "live/off-season/sv/index.html"
+            echo 'bye'
+          } > upload-v79.lftp
+          lftp -f upload-v79.lftp 2>&1 | tee upload-v79.log
+
+      - name: Compare the remote pages byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season/fr after/off-season/es after/off-season/sv
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "after/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/sv/index.html" "after/off-season/sv/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          cmp live/off-season/fr/index.html after/off-season/fr/index.html
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          cmp live/off-season/sv/index.html after/off-season/sv/index.html
+          tar -czf "villa-almale-after-v79-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify all four public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/fr public/off-season/es public/off-season/sv
+          urls=(
+            'https://villanuevoportil.com/off-season/'
+            'https://villanuevoportil.com/off-season/fr/'
+            'https://villanuevoportil.com/off-season/es/'
+            'https://villanuevoportil.com/off-season/sv/'
+          )
+          files=(
+            'public/off-season/index.html'
+            'public/off-season/fr/index.html'
+            'public/off-season/es/index.html'
+            'public/off-season/sv/index.html'
+          )
+          for index in 0 1 2 3; do
+            verified=0
+            for attempt in $(seq 1 18); do
+              if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${urls[$index]}?v79check=${GITHUB_RUN_ID}-${attempt}" -o "${files[$index]}" \
+                && grep -Fq 'La Monacilla' "${files[$index]}" \
+                && grep -Fq '18 km' "${files[$index]}" \
+                && grep -Fq 'lamonacillagolf.com/en/' "${files[$index]}"; then
+                verified=1
+                break
+              fi
+              sleep 5
+            done
+            test "$verified" -eq 1
+            test "$(grep -o 'class="course-card"' "${files[$index]}" | wc -l)" -eq 5
+            test "$(grep -o 'lamonacillagolf.com/en/' "${files[$index]}" | wc -l)" -eq 1
+          done
+          echo 'La Monacilla and the balanced five-course layout are live in EN, FR, ES and SV.' | tee public-verification.log
+
+      - name: Restore the targeted backup on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "before/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/sv" "before/off-season/sv/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v79-${{ github.run_id }}
+          path: |
+            villa-almale-before-v79-${{ github.run_id }}.tar.gz
+            villa-almale-after-v79-${{ github.run_id }}.tar.gz
+            v79-update.log
+            public-verification.log
+            upload-v79.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
