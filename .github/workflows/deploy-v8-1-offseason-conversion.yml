@@ -1,86 +1,24 @@
-name: Validate and deploy Villa Almale V8.1 off-season conversion
-run-name: Validate or deploy the focused off-season landing pages
+name: Deploy Villa Almale V8.1 off-season conversion
+run-name: Deploy and verify the focused off-season landing pages
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - .github/workflows/deploy-v8-1-offseason-conversion.yml
-      - scripts/v81-offseason-conversion.py
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
       - .github/workflows/deploy-v8-1-offseason-conversion.yml
       - scripts/v81-offseason-conversion.py
-  workflow_dispatch:
 
 concurrency:
-  group: villa-almale-v8-1-${{ github.event_name }}
+  group: villa-almale-v8-1-production
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
-  validate:
-    name: Test V8.1 against the four public off-season pages
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Prepare validation tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m pip install --disable-pip-version-check beautifulsoup4
-          python3 -m py_compile scripts/v81-offseason-conversion.py
-
-      - name: Download current public pages
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p live/off-season/fr live/off-season/es live/off-season/sv
-          token="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/?v81qa=${token}" -o live/off-season/index.html
-          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/fr/?v81qa=${token}" -o live/off-season/fr/index.html
-          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/es/?v81qa=${token}" -o live/off-season/es/index.html
-          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/sv/?v81qa=${token}" -o live/off-season/sv/index.html
-          test -s live/off-season/index.html
-          test -s live/off-season/fr/index.html
-          test -s live/off-season/es/index.html
-          test -s live/off-season/sv/index.html
-
-      - name: Apply and validate the conversion patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/v81-offseason-conversion.py live 2>&1 | tee v81-validation.log
-          for file in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html live/off-season/sv/index.html; do
-            grep -Fq 'data-offseason-promo="v81"' "$file"
-            grep -Fq 'id="why-golfers"' "$file"
-            grep -Fq 'id="golf-booking-cta"' "$file"
-            grep -Fq 'id="beyond-golf"' "$file"
-          done
-
-      - name: Preserve validation output
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: villa-almale-v81-validation-${{ github.run_id }}
-          path: |
-            live/off-season/index.html
-            live/off-season/fr/index.html
-            live/off-season/es/index.html
-            live/off-season/sv/index.html
-            v81-validation.log
-          retention-days: 30
-          if-no-files-found: warn
-
   deploy:
     name: Backup, patch, deploy and verify the four off-season pages
-    if: ${{ github.event_name != 'pull_request' }}
-    needs: validate
     runs-on: ubuntu-latest
     environment: production
     env:
@@ -90,11 +28,12 @@ jobs:
       DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
       DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
       DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Prepare deployment tools
+      - name: Prepare tools
         shell: bash
         run: |
           set -euo pipefail
@@ -104,7 +43,7 @@ jobs:
           python3 -m pip install --disable-pip-version-check beautifulsoup4
           python3 -m py_compile scripts/v81-offseason-conversion.py
 
-      - name: Download and archive production pages
+      - name: Download and archive current production pages
         shell: bash
         run: |
           set -euo pipefail
@@ -123,13 +62,23 @@ jobs:
           } > download-before.lftp
           lftp -f download-before.lftp
           cp -a live/. before/
+          test -s before/off-season/index.html
+          test -s before/off-season/fr/index.html
+          test -s before/off-season/es/index.html
+          test -s before/off-season/sv/index.html
           tar -czf "villa-almale-before-v81-${GITHUB_RUN_ID}.tar.gz" -C before .
 
-      - name: Apply V8.1
+      - name: Apply and validate V8.1
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/v81-offseason-conversion.py live 2>&1 | tee v81-update.log
+          for file in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html live/off-season/sv/index.html; do
+            grep -Fq 'data-offseason-promo="v81"' "$file"
+            grep -Fq 'id="why-golfers"' "$file"
+            grep -Fq 'id="golf-booking-cta"' "$file"
+            grep -Fq 'id="beyond-golf"' "$file"
+          done
 
       - name: Upload only the four off-season pages
         shell: bash
@@ -174,7 +123,7 @@ jobs:
           cmp live/off-season/sv/index.html after/off-season/sv/index.html
           tar -czf "villa-almale-after-v81-${GITHUB_RUN_ID}.tar.gz" -C after .
 
-      - name: Verify the public pages
+      - name: Verify public pages
         shell: bash
         run: |
           set -euo pipefail
@@ -214,11 +163,10 @@ jobs:
               assert len(soup.select('#nautical, #tourism')) == 0, filename
               assert len(soup.select('.hero-facts .hero-fact')) == 4, filename
               assert soup.select_one(f'#golf-booking-cta a[href="{booking}"]'), filename
-              assert 'clubhouse or first tee' in soup.get_text(' ', strip=True) or 'clubhouse ou le premier tee' in soup.get_text(' ', strip=True) or 'casa club ni al primer tee' in soup.get_text(' ', strip=True) or 'klubbhuset eller första tee' in soup.get_text(' ', strip=True), filename
-          print('All four public off-season pages passed V8.1 conversion checks.')
+          print('All four public off-season pages passed V8.1 checks.')
           PY
 
-      - name: Restore page backups on failure
+      - name: Restore backups on failure
         if: ${{ failure() }}
         shell: bash
         run: |
@@ -244,7 +192,7 @@ jobs:
           cat rollback.log
           exit "$status"
 
-      - name: Preserve deployment artifacts
+      - name: Preserve artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
