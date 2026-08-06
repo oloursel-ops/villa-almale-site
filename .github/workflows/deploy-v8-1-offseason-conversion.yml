@@ -1,0 +1,260 @@
+name: Validate and deploy Villa Almale V8.1 off-season conversion
+run-name: Validate or deploy the focused off-season landing pages
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v8-1-offseason-conversion.yml
+      - scripts/v81-offseason-conversion.py
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/deploy-v8-1-offseason-conversion.yml
+      - scripts/v81-offseason-conversion.py
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-v8-1-${{ github.event_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Test V8.1 against the four public off-season pages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare validation tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v81-offseason-conversion.py
+
+      - name: Download current public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/fr live/off-season/es live/off-season/sv
+          token="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/?v81qa=${token}" -o live/off-season/index.html
+          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/fr/?v81qa=${token}" -o live/off-season/fr/index.html
+          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/es/?v81qa=${token}" -o live/off-season/es/index.html
+          curl --retry 4 --retry-delay 2 -fsSL "https://villanuevoportil.com/off-season/sv/?v81qa=${token}" -o live/off-season/sv/index.html
+          test -s live/off-season/index.html
+          test -s live/off-season/fr/index.html
+          test -s live/off-season/es/index.html
+          test -s live/off-season/sv/index.html
+
+      - name: Apply and validate the conversion patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v81-offseason-conversion.py live 2>&1 | tee v81-validation.log
+          for file in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html live/off-season/sv/index.html; do
+            grep -Fq 'data-offseason-promo="v81"' "$file"
+            grep -Fq 'id="why-golfers"' "$file"
+            grep -Fq 'id="golf-booking-cta"' "$file"
+            grep -Fq 'id="beyond-golf"' "$file"
+          done
+
+      - name: Preserve validation output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v81-validation-${{ github.run_id }}
+          path: |
+            live/off-season/index.html
+            live/off-season/fr/index.html
+            live/off-season/es/index.html
+            live/off-season/sv/index.html
+            v81-validation.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  deploy:
+    name: Backup, patch, deploy and verify the four off-season pages
+    if: ${{ github.event_name != 'pull_request' }}
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+      DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+      DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+      DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+      DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+      DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare deployment tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+          python3 -m py_compile scripts/v81-offseason-conversion.py
+
+      - name: Download and archive production pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p live/off-season/fr live/off-season/es live/off-season/sv before/off-season/fr before/off-season/es before/off-season/sv
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "live/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "live/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "live/off-season/es/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/sv/index.html" "live/off-season/sv/index.html"
+            echo 'bye'
+          } > download-before.lftp
+          lftp -f download-before.lftp
+          cp -a live/. before/
+          tar -czf "villa-almale-before-v81-${GITHUB_RUN_ID}.tar.gz" -C before .
+
+      - name: Apply V8.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/v81-offseason-conversion.py live 2>&1 | tee v81-update.log
+
+      - name: Upload only the four off-season pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch deploy-started
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "live/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "live/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "live/off-season/es/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/sv" "live/off-season/sv/index.html"
+            echo 'bye'
+          } > upload-v81.lftp
+          lftp -f upload-v81.lftp 2>&1 | tee upload-v81.log
+
+      - name: Compare remote pages byte for byte
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p after/off-season/fr after/off-season/es after/off-season/sv
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/index.html" "after/off-season/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/fr/index.html" "after/off-season/fr/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/es/index.html" "after/off-season/es/index.html"
+            printf 'get %q -o %q;\n' "$DEPLOY_PATH/off-season/sv/index.html" "after/off-season/sv/index.html"
+            echo 'bye'
+          } > download-after.lftp
+          lftp -f download-after.lftp
+          cmp live/off-season/index.html after/off-season/index.html
+          cmp live/off-season/fr/index.html after/off-season/fr/index.html
+          cmp live/off-season/es/index.html after/off-season/es/index.html
+          cmp live/off-season/sv/index.html after/off-season/sv/index.html
+          tar -czf "villa-almale-after-v81-${GITHUB_RUN_ID}.tar.gz" -C after .
+
+      - name: Verify the public pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/fr public/off-season/es public/off-season/sv
+          fetch_until() {
+            local url="$1" marker="$2" output="$3"
+            for attempt in $(seq 1 18); do
+              if curl --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?v81check=${GITHUB_RUN_ID}-${attempt}" -o "$output" && grep -Fq "$marker" "$output"; then
+                printf '%s verified on attempt %s\n' "$url" "$attempt" | tee -a public-verification.log
+                return 0
+              fi
+              sleep 5
+            done
+            return 1
+          }
+          : > public-verification.log
+          fetch_until 'https://villanuevoportil.com/off-season/' '€371 per person for the week' public/off-season/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/fr/' '371 € par personne la semaine' public/off-season/fr/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/es/' '371 € por persona la semana' public/off-season/es/index.html
+          fetch_until 'https://villanuevoportil.com/off-season/sv/' '371 € per person för veckan' public/off-season/sv/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+
+          pages = {
+              'public/off-season/index.html': '/en/reservation.html',
+              'public/off-season/fr/index.html': '/reservation.html',
+              'public/off-season/es/index.html': '/es/reservation.html',
+              'public/off-season/sv/index.html': '/en/reservation.html',
+          }
+          for filename, booking in pages.items():
+              soup = BeautifulSoup(Path(filename).read_text(encoding='utf-8'), 'html.parser')
+              assert len(soup.select('[data-offseason-promo="v81"]')) == 1, filename
+              assert len(soup.select('#why-golfers')) == 1, filename
+              assert len(soup.select('#golf-booking-cta')) == 1, filename
+              assert len(soup.select('#beyond-golf')) == 1, filename
+              assert len(soup.select('#nautical, #tourism')) == 0, filename
+              assert len(soup.select('.hero-facts .hero-fact')) == 4, filename
+              assert soup.select_one(f'#golf-booking-cta a[href="{booking}"]'), filename
+              assert 'clubhouse or first tee' in soup.get_text(' ', strip=True) or 'clubhouse ou le premier tee' in soup.get_text(' ', strip=True) or 'casa club ni al primer tee' in soup.get_text(' ', strip=True) or 'klubbhuset eller första tee' in soup.get_text(' ', strip=True), filename
+          print('All four public off-season pages passed V8.1 conversion checks.')
+          PY
+
+      - name: Restore page backups on failure
+        if: ${{ failure() }}
+        shell: bash
+        run: |
+          set +e
+          if [ ! -f deploy-started ] || [ ! -f before/off-season/index.html ]; then
+            echo 'Deployment did not start; no rollback required.' | tee rollback.log
+            exit 0
+          fi
+          {
+            echo 'set cmd:fail-exit yes;'
+            echo 'set net:max-retries 3;'
+            echo 'set net:timeout 30;'
+            echo 'set sftp:auto-confirm yes;'
+            printf 'open -p %q -u %q,%q %q://%q;\n' "$DEPLOY_PORT" "$DEPLOY_USER" "$DEPLOY_PASSWORD" "$DEPLOY_SCHEME" "$DEPLOY_HOST"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season" "before/off-season/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/fr" "before/off-season/fr/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/es" "before/off-season/es/index.html"
+            printf 'put -O %q %q;\n' "$DEPLOY_PATH/off-season/sv" "before/off-season/sv/index.html"
+            echo 'bye'
+          } > rollback.lftp
+          lftp -f rollback.lftp > rollback.log 2>&1
+          status=$?
+          cat rollback.log
+          exit "$status"
+
+      - name: Preserve deployment artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v81-${{ github.run_id }}
+          path: |
+            villa-almale-before-v81-${{ github.run_id }}.tar.gz
+            villa-almale-after-v81-${{ github.run_id }}.tar.gz
+            v81-update.log
+            public-verification.log
+            upload-v81.log
+            rollback.log
+          retention-days: 90
+          if-no-files-found: warn
