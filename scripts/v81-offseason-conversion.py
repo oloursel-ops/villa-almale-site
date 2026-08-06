@@ -123,3 +123,5 @@ def main():
   if not p.is_file():raise RuntimeError(f'Missing page: {p}')
   patch(p,lang)
 if __name__=='__main__':main()
+
+# Production trigger after workflow registration.
