@@ -1,5 +1,5 @@
-name: Deploy shared off-season branding and WhatsApp
-run-name: Fix multilingual off-season logo, autumn banner and WhatsApp button
+name: Deploy shared off-season branding and actions
+run-name: Fix multilingual off-season logo, autumn banner and duplicate WhatsApp action
 
 on:
   push:
@@ -81,11 +81,12 @@ jobs:
           python3 scripts/update-offseason-shared.py es live/off-season/es/index.html | tee -a shared-update.log
           for file in live/off-season/index.html live/off-season/fr/index.html live/off-season/es/index.html; do
             grep -Fq 'villa-almale-offseason-shared-v1' "$file"
-            grep -Fq 'data-whatsapp-contact="villa-almale-offseason"' "$file"
             grep -Fq 'https://wa.me/33687174067' "$file"
+            grep -Fq 'site-floating-action--whatsapp' "$file"
             grep -Fq 'class="brand brand-official"' "$file"
             grep -Fq 'data-autumn-offer' "$file"
-            test "$(grep -Fo 'data-whatsapp-contact="villa-almale-offseason"' "$file" | wc -l)" -eq 1
+            ! grep -Fq 'data-whatsapp-contact="villa-almale-offseason"' "$file"
+            test "$(grep -Fo 'class="site-floating-action site-floating-action--whatsapp"' "$file" | wc -l)" -eq 1
             test "$(grep -Fo 'class="brand brand-official"' "$file" | wc -l)" -eq 1
             test "$(grep -Fo 'data-autumn-offer' "$file" | wc -l)" -ge 1
           done
@@ -147,8 +148,8 @@ jobs:
             for attempt in $(seq 1 24); do
               if curl -L --retry 3 --retry-delay 2 -fsS -H 'Cache-Control: no-cache' "${url}?sharedcheck=${GITHUB_RUN_ID}-${attempt}" -o "$output" \
                 && grep -Fq 'villa-almale-offseason-shared-v1' "$output" \
-                && grep -Fq 'data-whatsapp-contact="villa-almale-offseason"' "$output" \
                 && grep -Fq 'https://wa.me/33687174067' "$output" \
+                && grep -Fq 'site-floating-action--whatsapp' "$output" \
                 && grep -Fq 'class="brand brand-official"' "$output" \
                 && grep -Fq 'data-autumn-offer' "$output" \
                 && grep -Fq "$expected" "$output"; then
@@ -175,8 +176,10 @@ jobs:
           for lang, (home, booking) in expected.items():
               text = Path(f'public-{lang}.html').read_text(encoding='utf-8')
               soup = BeautifulSoup(text, 'html.parser')
-              assert len(soup.select('[data-whatsapp-contact="villa-almale-offseason"]')) == 1
-              assert 'wa.me/33687174067' in soup.select_one('[data-whatsapp-contact="villa-almale-offseason"]')['href']
+              assert not soup.select('[data-whatsapp-contact="villa-almale-offseason"]')
+              assert not soup.select('.villa-almale-whatsapp-offseason')
+              assert len(soup.select('.site-floating-action--whatsapp')) == 1
+              assert soup.select_one('.site-floating-action--whatsapp')['href'].startswith('https://wa.me/33687174067?')
               assert len(soup.select('[data-autumn-offer]')) == 1
               assert soup.select_one('[data-autumn-offer] .autumn-offer-link')['href'] == booking
               brand = soup.select_one('header.site-header a.brand-official') or soup.select_one('a.brand-official')
@@ -184,7 +187,7 @@ jobs:
               assert brand.select_one('svg.brand-icon[viewBox="0 0 64 64"]')
               assert not brand.select_one('img')
               assert soup.find('style', id='villa-almale-offseason-shared-v1')
-          print('All three public off-season pages validated: logo, banner and WhatsApp.')
+          print('All three public off-season pages validated: logo, banner and one WhatsApp action.')
           PY
 
       - name: Restore all three backups on failure
