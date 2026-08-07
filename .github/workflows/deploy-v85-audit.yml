@@ -1,0 +1,281 @@
+name: Deploy Villa Almale V8.5 audit patch
+
+on:
+  push:
+    paths:
+      - 'releases/v85/TRIGGER'
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Validate, patch and deploy V8.5
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+
+      - name: Reconstruct and verify patcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat releases/v85/apply_v85_audit.py.gz.b64.part* | base64 -d | gzip -d > apply_v85_audit.py
+          echo "383b732d845b22e8555e569d3007f094b4cd6f9f80b439800a2f5674c7b43956  apply_v85_audit.py" | sha256sum -c -
+          python3 -m py_compile apply_v85_audit.py
+
+      - name: Download and validate exact current production
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p work/en work/es work/off-season/fr work/off-season/es work/off-season/sv
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/index.html\" -o work/index.html;
+            get \"$DEPLOY_PATH/en/index.html\" -o work/en/index.html;
+            get \"$DEPLOY_PATH/es/index.html\" -o work/es/index.html;
+            get \"$DEPLOY_PATH/off-season/index.html\" -o work/off-season/index.html;
+            get \"$DEPLOY_PATH/off-season/fr/index.html\" -o work/off-season/fr/index.html;
+            get \"$DEPLOY_PATH/off-season/es/index.html\" -o work/off-season/es/index.html;
+            get \"$DEPLOY_PATH/off-season/sv/index.html\" -o work/off-season/sv/index.html;
+            bye
+          "
+          cat > expected-before.sha256 <<'EOF'
+          79e95b17807e1886856464a7b41d3eb00f65ce75cc0e1d3748e57764baa2a23f  work/index.html
+          98095c575fe4dbaadfaa1d7fd4fe08d695657a4d506c892326e82349f6acc70c  work/en/index.html
+          a710146fc62bf710ed9c86be0c5042cc51765de965f5099d7611748a3805abc3  work/es/index.html
+          ed4146079ca2c28f35ee17367ec4ee40c57c2262f6c76a5bcb025b0d677fd29e  work/off-season/index.html
+          36d9d86be65906747107f34bb10171806d750de21e722d4aac0a93216b618721  work/off-season/fr/index.html
+          479c9ed55f556eb911acfbd767665e6b385da23913fc718770e6a01be59d7024  work/off-season/es/index.html
+          cc9fa124d0755541750f282c706b1a96f7e40a479b00397f7cb3fb590ac7580a  work/off-season/sv/index.html
+          EOF
+          sed -i 's/^          //' expected-before.sha256
+          sha256sum -c expected-before.sha256
+          cp -a work backup-before-v85
+          tar -czf villa-almale-before-v85-${GITHUB_RUN_ID}.tar.gz -C backup-before-v85 .
+
+      - name: Apply and validate V8.5 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 apply_v85_audit.py work
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          from bs4 import BeautifulSoup
+          paths = [
+            'index.html','en/index.html','es/index.html',
+            'off-season/index.html','off-season/fr/index.html',
+            'off-season/es/index.html','off-season/sv/index.html'
+          ]
+          for rel in paths:
+              p=Path('work')/rel
+              s=BeautifulSoup(p.read_text(encoding='utf-8'),'html.parser')
+              assert len(s.find_all('h1')) == 1, rel
+              assert not [h for h in s.find_all(['h2','h3']) if not h.get_text(' ',strip=True)], rel
+              for tag in s.find_all('script', attrs={'type':'application/ld+json'}):
+                  json.loads(tag.string or tag.get_text())
+          print('DOM and JSON-LD validation OK')
+          PY
+          find work -type f -name 'index.html' -print0 | xargs -0 sha256sum > patched.sha256
+
+      - name: Upload temporary copies, verify, then publish
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/index.html -o \"$DEPLOY_PATH/index.html.v85tmp\";
+            put work/en/index.html -o \"$DEPLOY_PATH/en/index.html.v85tmp\";
+            put work/es/index.html -o \"$DEPLOY_PATH/es/index.html.v85tmp\";
+            put work/off-season/index.html -o \"$DEPLOY_PATH/off-season/index.html.v85tmp\";
+            put work/off-season/fr/index.html -o \"$DEPLOY_PATH/off-season/fr/index.html.v85tmp\";
+            put work/off-season/es/index.html -o \"$DEPLOY_PATH/off-season/es/index.html.v85tmp\";
+            put work/off-season/sv/index.html -o \"$DEPLOY_PATH/off-season/sv/index.html.v85tmp\";
+            bye
+          "
+          mkdir -p verify-tmp/en verify-tmp/es verify-tmp/off-season/fr verify-tmp/off-season/es verify-tmp/off-season/sv
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/index.html.v85tmp\" -o verify-tmp/index.html;
+            get \"$DEPLOY_PATH/en/index.html.v85tmp\" -o verify-tmp/en/index.html;
+            get \"$DEPLOY_PATH/es/index.html.v85tmp\" -o verify-tmp/es/index.html;
+            get \"$DEPLOY_PATH/off-season/index.html.v85tmp\" -o verify-tmp/off-season/index.html;
+            get \"$DEPLOY_PATH/off-season/fr/index.html.v85tmp\" -o verify-tmp/off-season/fr/index.html;
+            get \"$DEPLOY_PATH/off-season/es/index.html.v85tmp\" -o verify-tmp/off-season/es/index.html;
+            get \"$DEPLOY_PATH/off-season/sv/index.html.v85tmp\" -o verify-tmp/off-season/sv/index.html;
+            bye
+          "
+          for p in index.html en/index.html es/index.html off-season/index.html off-season/fr/index.html off-season/es/index.html off-season/sv/index.html; do
+            cmp "work/$p" "verify-tmp/$p"
+          done
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/index.html -o \"$DEPLOY_PATH/index.html\";
+            put work/en/index.html -o \"$DEPLOY_PATH/en/index.html\";
+            put work/es/index.html -o \"$DEPLOY_PATH/es/index.html\";
+            put work/off-season/index.html -o \"$DEPLOY_PATH/off-season/index.html\";
+            put work/off-season/fr/index.html -o \"$DEPLOY_PATH/off-season/fr/index.html\";
+            put work/off-season/es/index.html -o \"$DEPLOY_PATH/off-season/es/index.html\";
+            put work/off-season/sv/index.html -o \"$DEPLOY_PATH/off-season/sv/index.html\";
+            bye
+          "
+
+      - name: Verify final production bytes and rollback on mismatch
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          mkdir -p verify-final/en verify-final/es verify-final/off-season/fr verify-final/off-season/es verify-final/off-season/sv
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/index.html\" -o verify-final/index.html;
+            get \"$DEPLOY_PATH/en/index.html\" -o verify-final/en/index.html;
+            get \"$DEPLOY_PATH/es/index.html\" -o verify-final/es/index.html;
+            get \"$DEPLOY_PATH/off-season/index.html\" -o verify-final/off-season/index.html;
+            get \"$DEPLOY_PATH/off-season/fr/index.html\" -o verify-final/off-season/fr/index.html;
+            get \"$DEPLOY_PATH/off-season/es/index.html\" -o verify-final/off-season/es/index.html;
+            get \"$DEPLOY_PATH/off-season/sv/index.html\" -o verify-final/off-season/sv/index.html;
+            bye
+          "
+          bad=0
+          for p in index.html en/index.html es/index.html off-season/index.html off-season/fr/index.html off-season/es/index.html off-season/sv/index.html; do
+            cmp "work/$p" "verify-final/$p" || bad=1
+          done
+          if [ "$bad" -ne 0 ]; then
+            echo "Final verification failed; restoring the seven original files."
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 2;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              put backup-before-v85/index.html -o \"$DEPLOY_PATH/index.html\";
+              put backup-before-v85/en/index.html -o \"$DEPLOY_PATH/en/index.html\";
+              put backup-before-v85/es/index.html -o \"$DEPLOY_PATH/es/index.html\";
+              put backup-before-v85/off-season/index.html -o \"$DEPLOY_PATH/off-season/index.html\";
+              put backup-before-v85/off-season/fr/index.html -o \"$DEPLOY_PATH/off-season/fr/index.html\";
+              put backup-before-v85/off-season/es/index.html -o \"$DEPLOY_PATH/off-season/es/index.html\";
+              put backup-before-v85/off-season/sv/index.html -o \"$DEPLOY_PATH/off-season/sv/index.html\";
+              bye
+            "
+            exit 1
+          fi
+          echo "V8.5 final production byte verification OK."
+          lftp -c "
+            set cmd:fail-exit no;
+            set net:max-retries 1;
+            set net:timeout 20;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            rm \"$DEPLOY_PATH/index.html.v85tmp\";
+            rm \"$DEPLOY_PATH/en/index.html.v85tmp\";
+            rm \"$DEPLOY_PATH/es/index.html.v85tmp\";
+            rm \"$DEPLOY_PATH/off-season/index.html.v85tmp\";
+            rm \"$DEPLOY_PATH/off-season/fr/index.html.v85tmp\";
+            rm \"$DEPLOY_PATH/off-season/es/index.html.v85tmp\";
+            rm \"$DEPLOY_PATH/off-season/sv/index.html.v85tmp\";
+            bye
+          " || true
+
+      - name: Package audit evidence and rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/patched artifact/backup
+          cp -a work/index.html work/en work/es work/off-season artifact/patched/
+          cp -a backup-before-v85/. artifact/backup/
+          cp expected-before.sha256 patched.sha256 artifact/
+          cp apply_v85_audit.py artifact/
+          tar -czf villa-almale-v85-audit-${GITHUB_RUN_ID}.tar.gz -C artifact .
+
+      - name: Upload V8.5 audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v85-audit-${{ github.run_id }}
+          path: villa-almale-v85-audit-${{ github.run_id }}.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "### Villa Almale V8.5 deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Seven HTML files were patched from the exact production snapshot, verified before and after transfer, and no reservation or asset file was changed." >> "$GITHUB_STEP_SUMMARY"
