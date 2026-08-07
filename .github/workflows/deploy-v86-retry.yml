@@ -1,0 +1,69 @@
+name: Deploy Villa Almale V8.6 retry
+
+on:
+  push:
+    paths:
+      - 'releases/v86/RETRY'
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy and verify V8.6
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+          python3 -m pip install --disable-pip-version-check beautifulsoup4
+
+      - name: Reconstruct verified patcher
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat releases/v86/apply_v86_dedupe.py.gz.b64.part* | base64 -d | gzip -d > apply_v86_dedupe.py
+          echo "ee88ffa9ebf51611d80e6d3b4fb53511de98d4a1b885d6ca43888f252e2baa25  apply_v86_dedupe.py" | sha256sum -c -
+          python3 -m py_compile apply_v86_dedupe.py
+          bash -n releases/v86/deploy_v86.sh
+
+      - name: Patch exact V8.5 production and deploy V8.6
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        run: bash releases/v86/deploy_v86.sh
+
+      - name: Package V8.6 evidence and rollback
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audit
+          test -d work && cp -a work audit/patched || true
+          test -d backup-before-v86 && cp -a backup-before-v86 audit/rollback-v85 || true
+          test -f expected-v85.sha256 && cp expected-v85.sha256 audit/ || true
+          test -f expected-v86.sha256 && cp expected-v86.sha256 audit/ || true
+          tar -czf villa-almale-v86-audit-${GITHUB_RUN_ID}.tar.gz -C audit .
+
+      - name: Upload V8.6 audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: villa-almale-v86-audit-${{ github.run_id }}
+          path: villa-almale-v86-audit-${{ github.run_id }}.tar.gz
+          retention-days: 30
+          if-no-files-found: error
