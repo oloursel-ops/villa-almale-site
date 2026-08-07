@@ -54,17 +54,19 @@ jobs:
             get \"$DEPLOY_PATH/reservation.html\" -o snapshot/reservation.html;
             get \"$DEPLOY_PATH/en/reservation.html\" -o snapshot/en/reservation.html;
             get \"$DEPLOY_PATH/es/reservation.html\" -o snapshot/es/reservation.html;
-            cls \"$DEPLOY_PATH/sv/reservation.html\" >/dev/null 2>&1 && get \"$DEPLOY_PATH/sv/reservation.html\" -o snapshot/sv/reservation.html || true;
+            get \"$DEPLOY_PATH/sv/reservation.html\" -o snapshot/sv/reservation.html;
             get \"$DEPLOY_PATH/off-season/index.html\" -o snapshot/off-season/index.html;
             get \"$DEPLOY_PATH/off-season/fr/index.html\" -o snapshot/off-season/fr/index.html;
             get \"$DEPLOY_PATH/off-season/es/index.html\" -o snapshot/off-season/es/index.html;
             get \"$DEPLOY_PATH/off-season/sv/index.html\" -o snapshot/off-season/sv/index.html;
-            cls \"$DEPLOY_PATH/off-season/assets/styles.css\" >/dev/null 2>&1 && get \"$DEPLOY_PATH/off-season/assets/styles.css\" -o snapshot/off-season/assets/styles.css || true;
-            cls \"$DEPLOY_PATH/assets/js/audience.js\" >/dev/null 2>&1 && get \"$DEPLOY_PATH/assets/js/audience.js\" -o snapshot/assets/js/audience.js || true;
+            get \"$DEPLOY_PATH/off-season/assets/styles.css\" -o snapshot/off-season/assets/styles.css;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o snapshot/assets/js/audience.js;
             bye
           "
           find snapshot -type f -maxdepth 5 -print | sort
           test -s snapshot/index.html
+          test -s snapshot/en/index.html
+          test -s snapshot/es/index.html
           test -s snapshot/off-season/sv/index.html
           tar -czf villa-almale-production-v85-source.tar.gz -C snapshot .
 
