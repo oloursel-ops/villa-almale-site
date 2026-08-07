@@ -1,0 +1,62 @@
+name: Verify Villa Almale V8.5 public pages
+
+on:
+  push:
+    paths:
+      - '.github/workflows/verify-v85-public.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch public pages with cache-busting query
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p public/off-season/fr public/off-season/es public/off-season/sv public/en public/es public/off-season
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/?v85=${GITHUB_RUN_ID}" -o public/index.html
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/en/?v85=${GITHUB_RUN_ID}" -o public/en/index.html
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/es/?v85=${GITHUB_RUN_ID}" -o public/es/index.html
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/?v85=${GITHUB_RUN_ID}" -o public/off-season/index.html
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/fr/?v85=${GITHUB_RUN_ID}" -o public/off-season/fr/index.html
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/es/?v85=${GITHUB_RUN_ID}" -o public/off-season/es/index.html
+          curl -fsSL --retry 3 -H 'Cache-Control: no-cache' "https://villanuevoportil.com/off-season/sv/?v85=${GITHUB_RUN_ID}" -o public/off-season/sv/index.html
+
+      - name: Verify V8.5 markers and old-copy removals
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          from html import unescape
+
+          checks = {
+            'index.html': ['≈ 800 m² d’espace extérieur', '18ᵉ trou'],
+            'en/index.html': ['10 guests · max. 6 adults', '18th hole'],
+            'es/index.html': ['10 huéspedes · máx. 6 adultos', 'hoyo 18'],
+            'off-season/index.html': ['Off-season stays from 4 nights', '18th hole'],
+            'off-season/fr/index.html': ['Hors saison : séjour minimum de 4 nuits', '18ᵉ trou'],
+            'off-season/es/index.html': ['Fuera de temporada: estancia mínima de 4 noches', 'hoyo 18'],
+            'off-season/sv/index.html': ['Under lågsäsong: minst 4 nätter', '18:e hålet'],
+          }
+          forbidden = [
+            'page de campagne', 'campaign page', 'página de campaña', 'kampanjsidan',
+            'chemin piéton officiel', 'official pedestrian route', 'ruta peatonal oficial', 'officiella gångvägen'
+          ]
+          for rel, needles in checks.items():
+              raw = (Path('public')/rel).read_text(encoding='utf-8')
+              text = unescape(re.sub(r'<[^>]+>', ' ', raw))
+              text = re.sub(r'\s+', ' ', text)
+              missing = [x for x in needles if x not in text]
+              if missing:
+                  raise SystemExit(f'{rel}: missing public V8.5 markers: {missing}')
+              bad = [x for x in forbidden if x.lower() in text.lower()]
+              if bad:
+                  raise SystemExit(f'{rel}: old visible copy still present: {bad}')
+              print('PUBLIC OK:', rel)
+          PY
