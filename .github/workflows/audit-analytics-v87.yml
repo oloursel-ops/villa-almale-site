@@ -1,0 +1,123 @@
+name: Audit Villa Almale analytics V8.7
+
+on:
+  push:
+    paths:
+      - 'releases/v87-analytics/AUDIT'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit production GA4 and OwnerRez funnel
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current production tracking files
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p audit/en audit/es audit/assets/js
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/analytics-config.js\" -o audit/assets/js/analytics-config.js;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o audit/assets/js/audience.js;
+            get \"$DEPLOY_PATH/reservation.html\" -o audit/reservation.html;
+            get \"$DEPLOY_PATH/en/reservation.html\" -o audit/en/reservation.html;
+            get \"$DEPLOY_PATH/es/reservation.html\" -o audit/es/reservation.html;
+            bye
+          "
+
+      - name: Build audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, hashlib, json
+
+          root = Path('audit')
+          cfg = (root/'assets/js/analytics-config.js').read_text(encoding='utf-8')
+          aud = (root/'assets/js/audience.js').read_text(encoding='utf-8')
+          pages = [root/'reservation.html', root/'en/reservation.html', root/'es/reservation.html']
+
+          def yes(x): return 'YES' if x else 'NO'
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
+
+          ids = re.findall(r'G-[A-Z0-9]+', cfg + '\n' + aud)
+          report = []
+          report.append('VILLA ALMALE — PRODUCTION ANALYTICS AUDIT V8.7')
+          report.append('')
+          report.append('GA4')
+          report.append(f'- Measurement IDs found: {sorted(set(ids))}')
+          report.append(f'- booking_click code present: {yes("booking_click" in aud)}')
+          report.append(f'- view_booking_page code present: {yes("view_booking_page" in aud)}')
+          report.append(f'- contact_click code present: {yes("contact_click" in aud)}')
+          report.append(f'- language event present: {yes("language_select" in aud or "language_switch" in aud)}')
+          report.append(f'- consent gating present: {yes("analytics_storage" in aud and "denied" in aud and "granted" in aud)}')
+          report.append(f'- Google Signals disabled: {yes("allow_google_signals" in aud and "false" in aud)}')
+          report.append(f'- SameSite=None cookie flag present: {yes("SameSite=None" in aud)}')
+          report.append(f'- OwnerRez cross-domain/linker reference present: {yes("ownerrez.com" in aud or "ownerreservations.com" in aud or "orez.io" in aud)}')
+          report.append('')
+          report.append('OWNERREZ WIDGETS')
+          for p in pages:
+              text = p.read_text(encoding='utf-8')
+              widget_ids = re.findall(r'data-widgetid=["\']([^"\']+)', text)
+              prop_ids = re.findall(r'data-propertyid=["\']([^"\']+)', text)
+              report.append(f'- {p.relative_to(root)}: widget.js={yes("app.ownerrez.com/widget.js" in text)}, widget_id={widget_ids}, property_id={prop_ids}')
+              report.append(f'  analytics-config included={yes("analytics-config.js" in text)}, audience.js included={yes("audience.js" in text)}')
+          report.append('')
+          report.append('SHA256')
+          for p in [root/'assets/js/analytics-config.js', root/'assets/js/audience.js', *pages]:
+              report.append(f'- {p.relative_to(root)} {sha(p)}')
+
+          Path('analytics-v87-audit.txt').write_text('\n'.join(report)+'\n', encoding='utf-8')
+          print('\n'.join(report))
+          PY
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: analytics-v87-audit
+          path: |
+            analytics-v87-audit.txt
+            audit/assets/js/analytics-config.js
+            audit/assets/js/audience.js
+            audit/reservation.html
+            audit/en/reservation.html
+            audit/es/reservation.html
+          retention-days: 14
