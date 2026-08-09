@@ -1,0 +1,186 @@
+name: Deploy Villa Almale V8.7 analytics prerequisite
+
+on:
+  push:
+    paths:
+      - 'releases/v87-analytics/DEPLOY'
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Patch GA4 cookie for OwnerRez cross-domain tracking
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download and fingerprint current production audience.js
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p work backup verify
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o work/audience.js;
+            bye
+          "
+          echo "6aca52bcd9ac4aa75d6508e29fd911850a027298205f5ea4a5d8f7a6c5892a29  work/audience.js" | sha256sum -c -
+          cp work/audience.js backup/audience.js
+
+      - name: Apply minimal V8.7 patch and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('work/audience.js')
+          s = p.read_text(encoding='utf-8')
+          if 'SameSite=None;Secure' in s:
+              raise SystemExit('Patch already present; refusing a duplicate deployment')
+          needle = "    window.gtag('js', new Date());\n    window.gtag('config', cfg.measurementId, {"
+          replacement = "    // Required by OwnerRez for GA4 session continuity between this site and embedded booking widgets.\n    // This executes only after the visitor has explicitly accepted audience measurement.\n    window.gtag('set', {\n      'cookie_flags': 'SameSite=None;Secure'\n    });\n    window.gtag('js', new Date());\n    window.gtag('config', cfg.measurementId, {"
+          if s.count(needle) != 1:
+              raise SystemExit(f'Expected insertion point exactly once; found {s.count(needle)}')
+          s = s.replace(needle, replacement, 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          grep -F "'cookie_flags': 'SameSite=None;Secure'" work/audience.js
+          test "$(grep -Fc "SameSite=None;Secure" work/audience.js)" -eq 1
+          grep -F "analytics_storage: 'granted'" work/audience.js
+          grep -F "allow_google_signals: false" work/audience.js
+          grep -F "click_booking_engine" work/audience.js
+          sha256sum work/audience.js | tee analytics-v87-patched.sha256
+
+      - name: Upload temporary file and byte-check
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js.v87tmp\";
+            get \"$DEPLOY_PATH/assets/js/audience.js.v87tmp\" -o verify/audience.js;
+            bye
+          "
+          cmp work/audience.js verify/audience.js
+
+      - name: Publish with rollback protection
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          set +e
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\";
+            bye
+          "
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo "Publish failed; restoring previous audience.js"
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 3;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              put backup/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\";
+              bye
+            "
+            exit "$rc"
+          fi
+          mkdir -p verify-live
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o verify-live/audience.js;
+            rm -f \"$DEPLOY_PATH/assets/js/audience.js.v87tmp\";
+            bye
+          "
+          cmp work/audience.js verify-live/audience.js
+          grep -F "SameSite=None;Secure" verify-live/audience.js
+
+      - name: Preserve rollback and deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: analytics-v87-deployment-evidence
+          path: |
+            backup/audience.js
+            work/audience.js
+            analytics-v87-patched.sha256
+          retention-days: 30
