@@ -1,0 +1,35 @@
+name: Verify Villa Almale V8.8 public pages
+
+on:
+  push:
+    paths:
+      - 'releases/v88-consent-review/VERIFY'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify canonical public URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="v88-${GITHUB_RUN_ID}-$(date +%s)"
+          check() {
+            url="$1"
+            expected="$2"
+            echo "Checking $url"
+            curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "${url}?${stamp}" | grep -F "$expected"
+          }
+          curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "https://villanuevoportil.com/assets/js/audience.js?${stamp}" | grep -F 'consent-choice-v88.txt?choice='
+          curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "https://villanuevoportil.com/assets/consent-choice-v88.txt?${stamp}" | grep -Fx 'ok'
+          check 'https://villanuevoportil.com/' '<span class="review-count">2 avis</span>'
+          check 'https://villanuevoportil.com/en/' '<span class="review-count">2 reviews</span>'
+          check 'https://villanuevoportil.com/es/' '<span class="review-count">2 opiniones</span>'
+          check 'https://villanuevoportil.com/off-season/' '<span class="review-count">2 reviews</span>'
+          check 'https://villanuevoportil.com/off-season/fr/' '<span class="review-count">2 avis</span>'
+          check 'https://villanuevoportil.com/off-season/es/' '<span class="review-count">2 opiniones</span>'
+          check 'https://villanuevoportil.com/off-season/sv/' '<span class="review-count">2 omdömen</span>'
