@@ -1,0 +1,343 @@
+name: Deploy Villa Almale V8.8 consent counter and Airbnb review count
+
+on:
+  push:
+    paths:
+      - 'releases/v88-consent-review/DEPLOY'
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy consent-choice beacon and 2-review Airbnb count
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download exact production targets
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p work/en work/es work/off-season/fr work/off-season/es work/off-season/sv work/assets/js
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/index.html\" -o work/index.html;
+            get \"$DEPLOY_PATH/en/index.html\" -o work/en/index.html;
+            get \"$DEPLOY_PATH/es/index.html\" -o work/es/index.html;
+            get \"$DEPLOY_PATH/off-season/index.html\" -o work/off-season/index.html;
+            get \"$DEPLOY_PATH/off-season/fr/index.html\" -o work/off-season/fr/index.html;
+            get \"$DEPLOY_PATH/off-season/es/index.html\" -o work/off-season/es/index.html;
+            get \"$DEPLOY_PATH/off-season/sv/index.html\" -o work/off-season/sv/index.html;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o work/assets/js/audience.js;
+            bye
+          "
+          cp -a work backup
+
+      - name: Validate exact pre-patch fingerprints
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > expected.sha256 <<'EOF'
+          8041b4117b453314f9c8e6a13ba9af6e6b43c7411fa17be128ad0b372627cea1  work/index.html
+          25ecbfc532e57c95f692bb2fccff0d1f5e3ca144f3a52b68d6256fa73fad6c2f  work/en/index.html
+          9315d8c9a284d8f6ab740bebfb8cce76fe7dc1bf1da4424fd21820c06ffd1e5c  work/es/index.html
+          6c78d44543606addb529b85fb7c3a9c93a6c425444338c8c0ba59e15cebf48d9  work/off-season/index.html
+          fccbbc76974ef5957c8d3b649cb5c8bf3ef4fbb08ee31d63d2d7b29d9502d22e  work/off-season/fr/index.html
+          2a0e4c5a208efb627059778da849ba6918a4e9be38d5330258c255a0cd129c50  work/off-season/es/index.html
+          aca7e83ab96d7963b962248b7655b6cf3317a30e2b69af0d341523bcf5ae61ee  work/off-season/sv/index.html
+          18a37c304c98acb94fbd437c5ae662174edb05ad5085ad3d8df7f4a87b712a08  work/assets/js/audience.js
+          EOF
+          sha256sum -c expected.sha256
+
+      - name: Ensure consent endpoint is new
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          set +e
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 1;
+            set net:timeout 15;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/consent-choice-v88.txt\" -o preexisting-consent-choice-v88.txt;
+            bye
+          "
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "Consent endpoint already exists; refusing an unreviewed overwrite."
+            exit 1
+          fi
+
+      - name: Apply minimal V8.8 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('work')
+
+          replacements = {
+              'index.html': [
+                  ('<span class="review-count">1 commentaire</span>', '<span class="review-count">2 avis</span>', 1),
+                  ('"airbnbReviews":"1 avis"', '"airbnbReviews":"2 avis"', 1),
+                  ('"airbnbReviews":"1 review"', '"airbnbReviews":"2 reviews"', 1),
+                  ('"airbnbReviews":"1 opinión"', '"airbnbReviews":"2 opiniones"', 1),
+              ],
+              'en/index.html': [('<span class="review-count">1 review</span>', '<span class="review-count">2 reviews</span>', 1)],
+              'es/index.html': [('<span class="review-count">1 opinión</span>', '<span class="review-count">2 opiniones</span>', 1)],
+              'off-season/index.html': [('<span class="review-count">1 review</span>', '<span class="review-count">2 reviews</span>', 1)],
+              'off-season/fr/index.html': [('<span class="review-count">1 commentaire</span>', '<span class="review-count">2 avis</span>', 1)],
+              'off-season/es/index.html': [('<span class="review-count">1 opinión</span>', '<span class="review-count">2 opiniones</span>', 1)],
+              'off-season/sv/index.html': [('<span class="review-count">1 omdöme</span>', '<span class="review-count">2 omdömen</span>', 1)],
+          }
+          for rel, reps in replacements.items():
+              p = root / rel
+              s = p.read_text(encoding='utf-8')
+              for old, new, expected in reps:
+                  actual = s.count(old)
+                  if actual != expected:
+                      raise SystemExit(f'{rel}: expected {expected} occurrence(s) of {old!r}, found {actual}')
+                  s = s.replace(old, new, expected)
+              p.write_text(s, encoding='utf-8')
+
+          p = root / 'assets/js/audience.js'
+          s = p.read_text(encoding='utf-8')
+          if 'consent-choice-v88.txt' in s or 'function logConsentChoice' in s:
+              raise SystemExit('Consent-choice patch already present')
+          function_anchor = "  function deleteAnalyticsCookies() {\n"
+          function_block = """  function logConsentChoice(choice, previousChoice) {\n    if (choice !== 'accepted' && choice !== 'rejected') return;\n    const previous = previousChoice === 'accepted' || previousChoice === 'rejected' ? previousChoice : 'unset';\n    try {\n      const endpoint = `/assets/consent-choice-v88.txt?choice=${encodeURIComponent(choice)}&from=${encodeURIComponent(previous)}&ts=${Date.now()}`;\n      fetch(endpoint, {\n        method: 'GET',\n        credentials: 'omit',\n        cache: 'no-store',\n        keepalive: true\n      }).catch(() => {});\n    } catch (_) {}\n  }\n\n"""
+          if s.count(function_anchor) != 1:
+              raise SystemExit(f'Expected one consent function insertion anchor; found {s.count(function_anchor)}')
+          s = s.replace(function_anchor, function_block + function_anchor, 1)
+
+          old_click = """        const choice = button.dataset.consent;\n        const analyticsWasLoaded = loaded;\n        setChoice(choice);\n        banner.hidden = true;\n"""
+          new_click = """        const choice = button.dataset.consent;\n        const previousChoice = getChoice();\n        const analyticsWasLoaded = loaded;\n        setChoice(choice);\n        logConsentChoice(choice, previousChoice);\n        banner.hidden = true;\n"""
+          if s.count(old_click) != 1:
+              raise SystemExit(f'Expected one consent click anchor; found {s.count(old_click)}')
+          s = s.replace(old_click, new_click, 1)
+          p.write_text(s, encoding='utf-8')
+
+          (root / 'assets/consent-choice-v88.txt').write_text('ok\n', encoding='utf-8')
+          PY
+
+          grep -F "consent-choice-v88.txt?choice=" work/assets/js/audience.js
+          grep -F "credentials: 'omit'" work/assets/js/audience.js
+          grep -F "analytics_storage: 'granted'" work/assets/js/audience.js
+          grep -F "'cookie_flags': 'SameSite=None;Secure'" work/assets/js/audience.js
+          grep -F "allow_google_signals: false" work/assets/js/audience.js
+          grep -F '<span class="review-count">2 avis</span>' work/index.html
+          grep -F '"airbnbReviews":"2 avis"' work/index.html
+          grep -F '"airbnbReviews":"2 reviews"' work/index.html
+          grep -F '"airbnbReviews":"2 opiniones"' work/index.html
+          grep -F '<span class="review-count">2 reviews</span>' work/en/index.html
+          grep -F '<span class="review-count">2 opiniones</span>' work/es/index.html
+          grep -F '<span class="review-count">2 reviews</span>' work/off-season/index.html
+          grep -F '<span class="review-count">2 avis</span>' work/off-season/fr/index.html
+          grep -F '<span class="review-count">2 opiniones</span>' work/off-season/es/index.html
+          grep -F '<span class="review-count">2 omdömen</span>' work/off-season/sv/index.html
+          if grep -Rni --include='*.html' -E 'review-count">1 (commentaire|review|opinión|omdöme)|airbnbReviews":"1 (avis|review|opinión)' work/index.html work/en work/es work/off-season; then
+            echo 'A public Airbnb singular count remains after patch.'
+            exit 1
+          fi
+          sha256sum work/index.html work/en/index.html work/es/index.html work/off-season/index.html work/off-season/fr/index.html work/off-season/es/index.html work/off-season/sv/index.html work/assets/js/audience.js work/assets/consent-choice-v88.txt > v88-postpatch.sha256
+
+      - name: Publish changed files with rollback protection
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          upload_cmds=$(cat <<EOF
+          put work/index.html -o "$DEPLOY_PATH/index.html";
+          put work/en/index.html -o "$DEPLOY_PATH/en/index.html";
+          put work/es/index.html -o "$DEPLOY_PATH/es/index.html";
+          put work/off-season/index.html -o "$DEPLOY_PATH/off-season/index.html";
+          put work/off-season/fr/index.html -o "$DEPLOY_PATH/off-season/fr/index.html";
+          put work/off-season/es/index.html -o "$DEPLOY_PATH/off-season/es/index.html";
+          put work/off-season/sv/index.html -o "$DEPLOY_PATH/off-season/sv/index.html";
+          put work/assets/js/audience.js -o "$DEPLOY_PATH/assets/js/audience.js";
+          put work/assets/consent-choice-v88.txt -o "$DEPLOY_PATH/assets/consent-choice-v88.txt";
+          EOF
+          )
+          set +e
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            $upload_cmds
+            bye
+          "
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            echo 'Publish failed; restoring all pre-existing files.'
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 3;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              put backup/index.html -o \"$DEPLOY_PATH/index.html\";
+              put backup/en/index.html -o \"$DEPLOY_PATH/en/index.html\";
+              put backup/es/index.html -o \"$DEPLOY_PATH/es/index.html\";
+              put backup/off-season/index.html -o \"$DEPLOY_PATH/off-season/index.html\";
+              put backup/off-season/fr/index.html -o \"$DEPLOY_PATH/off-season/fr/index.html\";
+              put backup/off-season/es/index.html -o \"$DEPLOY_PATH/off-season/es/index.html\";
+              put backup/off-season/sv/index.html -o \"$DEPLOY_PATH/off-season/sv/index.html\";
+              put backup/assets/js/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\";
+              rm -f \"$DEPLOY_PATH/assets/consent-choice-v88.txt\";
+              bye
+            "
+            exit "$rc"
+          fi
+
+      - name: Byte-verify live deployment
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          mkdir -p verify/en verify/es verify/off-season/fr verify/off-season/es verify/off-season/sv verify/assets/js verify/assets
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/index.html\" -o verify/index.html;
+            get \"$DEPLOY_PATH/en/index.html\" -o verify/en/index.html;
+            get \"$DEPLOY_PATH/es/index.html\" -o verify/es/index.html;
+            get \"$DEPLOY_PATH/off-season/index.html\" -o verify/off-season/index.html;
+            get \"$DEPLOY_PATH/off-season/fr/index.html\" -o verify/off-season/fr/index.html;
+            get \"$DEPLOY_PATH/off-season/es/index.html\" -o verify/off-season/es/index.html;
+            get \"$DEPLOY_PATH/off-season/sv/index.html\" -o verify/off-season/sv/index.html;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o verify/assets/js/audience.js;
+            get \"$DEPLOY_PATH/assets/consent-choice-v88.txt\" -o verify/assets/consent-choice-v88.txt;
+            bye
+          "
+          cmp work/index.html verify/index.html
+          cmp work/en/index.html verify/en/index.html
+          cmp work/es/index.html verify/es/index.html
+          cmp work/off-season/index.html verify/off-season/index.html
+          cmp work/off-season/fr/index.html verify/off-season/fr/index.html
+          cmp work/off-season/es/index.html verify/off-season/es/index.html
+          cmp work/off-season/sv/index.html verify/off-season/sv/index.html
+          cmp work/assets/js/audience.js verify/assets/js/audience.js
+          cmp work/assets/consent-choice-v88.txt verify/assets/consent-choice-v88.txt
+
+      - name: Public smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="v88-${GITHUB_RUN_ID}"
+          curl -fsS "https://villanuevoportil.com/assets/js/audience.js?$stamp" | grep -F 'consent-choice-v88.txt?choice='
+          curl -fsS "https://villanuevoportil.com/assets/consent-choice-v88.txt?$stamp" | grep -Fx 'ok'
+          curl -fsS "https://villanuevoportil.com/index.html?$stamp" | grep -F '<span class="review-count">2 avis</span>'
+          curl -fsS "https://villanuevoportil.com/en/index.html?$stamp" | grep -F '<span class="review-count">2 reviews</span>'
+          curl -fsS "https://villanuevoportil.com/es/index.html?$stamp" | grep -F '<span class="review-count">2 opiniones</span>'
+          curl -fsS "https://villanuevoportil.com/off-season/index.html?$stamp" | grep -F '<span class="review-count">2 reviews</span>'
+          curl -fsS "https://villanuevoportil.com/off-season/fr/index.html?$stamp" | grep -F '<span class="review-count">2 avis</span>'
+          curl -fsS "https://villanuevoportil.com/off-season/es/index.html?$stamp" | grep -F '<span class="review-count">2 opiniones</span>'
+          curl -fsS "https://villanuevoportil.com/off-season/sv/index.html?$stamp" | grep -F '<span class="review-count">2 omdömen</span>'
+
+      - name: Preserve rollback and deployment evidence
+        if: always()
+        shell: bash
+        run: |
+          tar -czf v88-prepatch-backup.tar.gz -C backup .
+
+      - name: Upload rollback artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v88-prepatch-backup
+          path: v88-prepatch-backup.tar.gz
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload post-patch fingerprints
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v88-postpatch-fingerprints
+          path: v88-postpatch.sha256
+          retention-days: 30
+          if-no-files-found: error
