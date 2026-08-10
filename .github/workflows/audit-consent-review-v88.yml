@@ -1,0 +1,133 @@
+name: Audit Villa Almale V8.8 consent and Airbnb review count
+
+on:
+  push:
+    paths:
+      - 'releases/v88-consent-review/AUDIT'
+  workflow_dispatch:
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit live consent code and Airbnb review badges
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current production
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p live
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            mirror --verbose \
+              --exclude-glob .git/ \
+              --exclude-glob ._DEPLOY*/ \
+              \"$DEPLOY_PATH\" ./live;
+            bye
+          "
+          test -f live/assets/js/audience.js
+
+      - name: Build targeted audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== audience.js SHA256 ==='
+            sha256sum live/assets/js/audience.js
+            echo
+            echo '=== consent code anchors ==='
+            grep -nE "consentKey|function setChoice|data-consent|analytics_storage|SameSite=None|loadAnalytics" live/assets/js/audience.js || true
+            echo
+            echo '=== Airbnb occurrences in live HTML ==='
+            grep -Rni --include='*.html' -E 'Airbnb' live || true
+            echo
+            echo '=== Singular review-count candidates in Airbnb HTML files ==='
+            python3 - <<'PY'
+          } > audit.txt
+          python3 - <<'PY' >> audit.txt
+          from pathlib import Path
+          import re
+          root = Path('live')
+          patterns = [
+              r'\b1\s+avis\b', r'\b1\s+review\b', r'\b1\s+Airbnb\s+review\b',
+              r'\b1\s+reseña\b', r'\b1\s+recension\b', r'\b1\s+Bewertung\b',
+              r'\b1\s+beoordeling\b', r'\b1\s+recensione\b'
+          ]
+          for p in sorted(root.rglob('*.html')):
+              text = p.read_text(encoding='utf-8', errors='replace')
+              if 'airbnb' not in text.lower():
+                  continue
+              hits=[]
+              for pat in patterns:
+                  hits += [m.group(0) for m in re.finditer(pat, text, flags=re.I)]
+              if hits:
+                  print(f'{p}: {hits}')
+          PY
+          cat audit.txt
+
+      - name: Package audit evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cp audit.txt evidence/
+          cp live/assets/js/audience.js evidence/
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+          root=Path('live')
+          out=Path('evidence/airbnb-pages')
+          for p in root.rglob('*.html'):
+              text=p.read_text(encoding='utf-8', errors='replace')
+              if 'airbnb' in text.lower():
+                  dest=out / p.relative_to(root)
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  shutil.copy2(p,dest)
+          PY
+          tar -czf v88-audit-evidence.tar.gz -C evidence .
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v88-audit-evidence
+          path: v88-audit-evidence.tar.gz
+          retention-days: 30
+          if-no-files-found: error
