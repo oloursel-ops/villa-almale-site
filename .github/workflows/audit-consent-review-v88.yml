@@ -80,7 +80,6 @@ jobs:
             grep -Rni --include='*.html' -E 'Airbnb' live || true
             echo
             echo '=== Singular review-count candidates in Airbnb HTML files ==='
-            python3 - <<'PY'
           } > audit.txt
           python3 - <<'PY' >> audit.txt
           from pathlib import Path
