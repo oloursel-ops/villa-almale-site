@@ -1,0 +1,69 @@
+name: Test Villa Almale consent matrix
+
+on:
+  push:
+    paths:
+      - 'releases/v89-consent-matrix/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Selenium
+        run: pip install -q selenium
+
+      - name: Test consent states
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+
+          options=Options()
+          for a in ('--headless=new','--no-sandbox','--disable-dev-shm-usage','--window-size=1440,1000'):
+              options.add_argument(a)
+          options.set_capability('goog:loggingPrefs', {'performance':'ALL','browser':'ALL'})
+
+          def run_state(state):
+              d=webdriver.Chrome(options=options)
+              try:
+                  d.get('https://villanuevoportil.com/')
+                  time.sleep(1)
+                  d.execute_script("localStorage.clear();")
+                  d.delete_all_cookies()
+                  if state is not None:
+                      d.execute_script("localStorage.setItem('villa_privacy_consent_v89', JSON.stringify({choice:arguments[0], timestamp:Date.now()}));", state)
+                  d.refresh(); time.sleep(8)
+                  banner_visible=d.execute_script("var b=document.getElementById('audience-consent'); return !!(b && !b.hidden); ")
+                  choice=d.execute_script("return localStorage.getItem('villa_privacy_consent_v89');")
+                  meta=[]; ga=[]
+                  for entry in d.get_log('performance'):
+                      msg=json.loads(entry['message'])['message']
+                      if msg.get('method')!='Network.requestWillBeSent': continue
+                      url=msg.get('params',{}).get('request',{}).get('url','')
+                      init=msg.get('params',{}).get('initiator',{})
+                      if 'facebook' in url or 'fbevents' in url:
+                          meta.append((url,init))
+                      if 'google-analytics.com/g/collect' in url or 'googletagmanager.com/gtag/js' in url:
+                          ga.append((url,init))
+                  print('\nSTATE',state)
+                  print('BANNER_VISIBLE',banner_visible)
+                  print('CHOICE',choice)
+                  print('META_COUNT',len(meta))
+                  for u,i in meta:
+                      print('META',u)
+                      print('INIT',json.dumps(i)[:1200])
+                  print('GA_COUNT',len(ga))
+                  for u,i in ga[:10]:
+                      print('GA',u)
+                      print('GA_INIT',json.dumps(i)[:1000])
+              finally:
+                  d.quit()
+
+          for state in (None,'rejected','audience','all'):
+              run_state(state)
+          PY
