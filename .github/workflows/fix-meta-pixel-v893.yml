@@ -1,0 +1,123 @@
+name: Fix Villa Almale Meta Pixel init V8.9.3
+
+on:
+  push:
+    paths:
+      - 'releases/v893-meta-pixel/DEPLOY'
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current production audience.js
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          mkdir -p work backup verify
+          lftp -c "set cmd:fail-exit yes; set net:max-retries 2; set net:timeout 30; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; get \"$DEPLOY_PATH/assets/js/audience.js\" -o work/audience.js; bye"
+          cp work/audience.js backup/audience.js
+
+      - name: Simplify Meta Pixel initialization
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('work/audience.js')
+          s=p.read_text(encoding='utf-8')
+          for guard in ('813403868466271','villa_privacy_consent_v89','loadMetaPixel'):
+              if guard not in s:
+                  raise SystemExit(f'Missing guard: {guard}')
+          old="""    window.fbq('consent', 'grant');\n    window.fbq('init', metaPixelId);\n    window.fbq('track', 'PageView');\n"""
+          new="""    // The Meta library is not loaded at all until the visitor chooses \"Accept all\".\n    // Therefore the standard Meta initialization is sufficient here: init, then PageView.\n    window.fbq('init', metaPixelId);\n    window.fbq('track', 'PageView');\n"""
+          if s.count(old) != 1:
+              raise SystemExit(f'Expected Meta init block once, found {s.count(old)}')
+          s=s.replace(old,new,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          grep -F "window.fbq('init', metaPixelId);" work/audience.js
+          grep -F "window.fbq('track', 'PageView');" work/audience.js
+          if grep -Fq "window.fbq('consent', 'grant');" work/audience.js; then
+            echo 'Unexpected grant call remains in initial Meta load'; exit 1
+          fi
+          grep -F "villa_privacy_consent_v89" work/audience.js
+          grep -F "813403868466271" work/audience.js
+          grep -F "display:flex!important" work/audience.js
+
+      - name: Upload temp and verify bytes
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+          esac
+          lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js.v893tmp\"; get \"$DEPLOY_PATH/assets/js/audience.js.v893tmp\" -o verify/audience.js; bye"
+          cmp work/audience.js verify/audience.js
+
+      - name: Publish with rollback
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+          esac
+          set +e
+          lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\"; bye"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; put backup/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\"; bye"
+            exit "$rc"
+          fi
+          lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; rm -f \"$DEPLOY_PATH/assets/js/audience.js.v893tmp\"; get \"$DEPLOY_PATH/assets/js/audience.js\" -o verify/live.js; bye"
+          cmp work/audience.js verify/live.js
