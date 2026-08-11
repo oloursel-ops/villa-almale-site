@@ -1,0 +1,44 @@
+name: Inspect Villa Almale Meta Pixel production
+
+on:
+  push:
+    paths:
+      - 'releases/v89-meta-inspect/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+      - name: Download and inspect current audience.js
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          lftp -c "set cmd:fail-exit yes; set net:max-retries 2; set net:timeout 30; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; get \"$DEPLOY_PATH/assets/js/audience.js\" -o audience.js; bye"
+          echo '--- META BLOCKS ---'
+          grep -n -C 10 -E "fbq|fbevents|metaPixelId|loadMetaPixel" audience.js || true
+          echo '--- CONSENT CHOICE ---'
+          grep -n -C 4 -E "choice === 'all'|data-consent=|villa_privacy_consent_v89" audience.js || true
+          echo '--- SYNTAX ---'
+          node --check audience.js
