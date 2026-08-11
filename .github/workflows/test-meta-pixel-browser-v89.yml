@@ -1,0 +1,68 @@
+name: Test Villa Almale Meta Pixel in browser
+
+on:
+  push:
+    paths:
+      - 'releases/v89-meta-browser-test/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Selenium
+        run: pip install -q selenium
+      - name: Run Chrome and inspect Meta requests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+
+          options = Options()
+          options.add_argument('--headless=new')
+          options.add_argument('--no-sandbox')
+          options.add_argument('--disable-dev-shm-usage')
+          options.add_argument('--disable-gpu')
+          options.add_argument('--window-size=1440,1000')
+          options.set_capability('goog:loggingPrefs', {'performance': 'ALL', 'browser': 'ALL'})
+
+          driver = webdriver.Chrome(options=options)
+          try:
+              driver.get('https://villanuevoportil.com/')
+              time.sleep(2)
+              driver.execute_script("localStorage.setItem('villa_privacy_consent_v89', JSON.stringify({choice:'all', timestamp:Date.now()}));")
+              driver.refresh()
+              time.sleep(8)
+              choice = driver.execute_script("return localStorage.getItem('villa_privacy_consent_v89');")
+              fbq_type = driver.execute_script("return typeof window.fbq;")
+              print('CONSENT=', choice)
+              print('FBQ_TYPE=', fbq_type)
+              urls=[]
+              statuses=[]
+              for entry in driver.get_log('performance'):
+                  msg=json.loads(entry['message'])['message']
+                  if msg.get('method')=='Network.responseReceived':
+                      resp=msg.get('params',{}).get('response',{})
+                      url=resp.get('url','')
+                      if 'facebook' in url or 'fbevents' in url:
+                          urls.append(url)
+                          statuses.append((resp.get('status'), url))
+              print('META_RESPONSES=')
+              for status,url in statuses:
+                  print(status, url)
+              browser_logs=driver.get_log('browser')
+              print('BROWSER_LOGS=')
+              for row in browser_logs:
+                  print(row)
+              if not any('connect.facebook.net' in u and 'fbevents.js' in u for u in urls):
+                  raise SystemExit('fbevents.js was not loaded')
+              if not any('facebook.com/tr' in u for u in urls):
+                  raise SystemExit('Meta pixel /tr request was not observed')
+              print('META_PIXEL_BROWSER_TEST_OK')
+          finally:
+              driver.quit()
+          PY
