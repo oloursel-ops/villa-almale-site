@@ -1,0 +1,70 @@
+name: Inspect Villa Almale Meta pixel config payload
+
+on:
+  push:
+    paths:
+      - 'releases/v89-meta-config/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Selenium
+        run: pip install -q selenium
+      - name: Inspect config body and failed network requests
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time, re
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+
+          opt=Options()
+          for a in ('--headless=new','--no-sandbox','--disable-dev-shm-usage','--window-size=1440,1000'):
+              opt.add_argument(a)
+          opt.set_capability('goog:loggingPrefs', {'performance':'ALL','browser':'ALL'})
+          d=webdriver.Chrome(options=opt)
+          d.execute_cdp_cmd('Network.enable', {})
+          try:
+              d.get('https://villanuevoportil.com/')
+              time.sleep(2)
+              d.execute_script("localStorage.setItem('villa_privacy_consent_v89', JSON.stringify({choice:'all', timestamp:Date.now()}));")
+              d.refresh(); time.sleep(8)
+              state=d.execute_script("return (window.fbq && fbq.getState) ? fbq.getState() : null;")
+              print('FBQ_STATE=', json.dumps(state, default=str)[:12000])
+              reqs={}
+              config_bodies=[]
+              failed=[]
+              logs=d.get_log('performance')
+              for e in logs:
+                  m=json.loads(e['message'])['message']; method=m.get('method'); p=m.get('params',{})
+                  if method=='Network.requestWillBeSent':
+                      reqs[p.get('requestId')]=p.get('request',{}).get('url','')
+                  elif method=='Network.responseReceived':
+                      r=p.get('response',{}); url=r.get('url','')
+                      if 'connect.facebook.net/signals/config/813403868466271' in url:
+                          rid=p.get('requestId')
+                          try:
+                              body=d.execute_cdp_cmd('Network.getResponseBody', {'requestId':rid}).get('body','')
+                          except Exception as exc:
+                              body=f'ERROR_GETTING_BODY:{exc}'
+                          config_bodies.append(body)
+                  elif method=='Network.loadingFailed':
+                      rid=p.get('requestId'); failed.append((reqs.get(rid,'UNKNOWN'),p.get('errorText'),p.get('blockedReason'),p.get('type')))
+              print('FAILED_REQUESTS=')
+              for row in failed: print(row)
+              print('CONFIG_BODY_SUMMARY=')
+              for body in config_bodies:
+                  print('LEN=',len(body))
+                  for term in ['restrictedEventNames','coreSetup','restriction','PageView','is_automatic_matching_enabled','automaticMatching','prohibited','disable','blocked','dataProcessing','privacy']:
+                      hits=[x.group(0) for x in re.finditer(r'.{0,180}'+re.escape(term)+r'.{0,350}', body, flags=re.I|re.S)]
+                      if hits:
+                          print('TERM',term)
+                          for h in hits[:5]: print(h.replace('\n',' ')[:700])
+                  print('PREFIX=',body[:2500].replace('\n',' '))
+          finally:
+              d.quit()
+          PY
