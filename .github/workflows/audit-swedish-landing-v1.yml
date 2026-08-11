@@ -1,0 +1,82 @@
+name: Audit Swedish off-season landing
+
+on:
+  push:
+    paths:
+      - 'releases/audit-sv-landing/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Selenium
+        run: pip install -q selenium beautifulsoup4
+
+      - name: Audit production pages
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.common.by import By
+          from bs4 import BeautifulSoup
+          import time, json, os
+
+          pages = {
+            'sv':'https://villanuevoportil.com/off-season/sv/',
+            'fr':'https://villanuevoportil.com/off-season/fr/',
+            'en':'https://villanuevoportil.com/off-season/',
+            'es':'https://villanuevoportil.com/off-season/es/'
+          }
+          os.makedirs('audit', exist_ok=True)
+          opt=Options()
+          for a in ('--headless=new','--no-sandbox','--disable-dev-shm-usage','--window-size=1440,1200'):
+            opt.add_argument(a)
+          d=webdriver.Chrome(options=opt)
+          try:
+            summaries={}
+            for lang,url in pages.items():
+              d.get(url)
+              time.sleep(3)
+              summaries[lang]={'url':d.current_url,'title':d.title}
+              html=d.page_source
+              open(f'audit/{lang}.html','w',encoding='utf-8').write(html)
+              soup=BeautifulSoup(html,'html.parser')
+              # collect visible text from first likely hero/main block
+              h1=soup.find('h1')
+              summaries[lang]['h1']=h1.get_text(' ',strip=True) if h1 else None
+              if h1:
+                parent=h1
+                for _ in range(4):
+                  if parent.parent: parent=parent.parent
+                summaries[lang]['hero_text']=' | '.join(parent.stripped_strings)[:5000]
+              else:
+                summaries[lang]['hero_text']=''
+              # currency/price-like snippets near top
+              top=' | '.join(list(soup.stripped_strings)[:250])
+              summaries[lang]['top_text']=top[:12000]
+              # full visible text
+              summaries[lang]['full_text']='\n'.join(soup.stripped_strings)[:30000]
+              # desktop screenshot
+              d.set_window_size(1440,1200)
+              d.save_screenshot(f'audit/{lang}-desktop.png')
+              # mobile screenshot
+              d.set_window_size(390,844)
+              d.get(url); time.sleep(2)
+              d.save_screenshot(f'audit/{lang}-mobile.png')
+              d.set_window_size(1440,1200)
+            open('audit/summary.json','w',encoding='utf-8').write(json.dumps(summaries,ensure_ascii=False,indent=2))
+            print(json.dumps(summaries,ensure_ascii=False,indent=2))
+          finally:
+            d.quit()
+          PY
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sv-landing-audit
+          path: audit/
+          retention-days: 7
