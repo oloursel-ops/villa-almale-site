@@ -1,4 +1,4 @@
-name: Snapshot Villa Almale production audience.js V8.9
+name: Snapshot Villa Almale production consent files V8.9
 
 on:
   push:
@@ -18,7 +18,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y lftp
 
-      - name: Download current production audience.js
+      - name: Download current production consent files
         env:
           DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
           DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
@@ -50,13 +50,15 @@ jobs:
             $EXTRA_SETTINGS
             open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
             get \"$DEPLOY_PATH/assets/js/audience.js\" -o snapshot/audience.js;
+            get \"$DEPLOY_PATH/cookies.html\" -o snapshot/cookies.html;
+            get \"$DEPLOY_PATH/privacy.html\" -o snapshot/privacy.html;
             bye
           "
-          sha256sum snapshot/audience.js > snapshot/audience.sha256
+          sha256sum snapshot/audience.js snapshot/cookies.html snapshot/privacy.html > snapshot/files.sha256
 
       - name: Upload snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: v89-production-audience-snapshot
+          name: v89-production-consent-snapshot
           path: snapshot/
           retention-days: 7
