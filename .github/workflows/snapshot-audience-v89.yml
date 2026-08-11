@@ -3,7 +3,7 @@ name: Snapshot Villa Almale production audience.js V8.9
 on:
   push:
     paths:
-      - 'releases/v89-consent-meta/SNAPSHOT'
+      - 'releases/v89-consent-meta/SNAPSHOT*'
 
 permissions:
   contents: read
@@ -11,6 +11,7 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
+    environment: production
     steps:
       - name: Install lftp
         run: |
@@ -28,6 +29,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
           test "$DEPLOY_PATH" = "sites/PageWebbasique1"
           case "$DEPLOY_SCHEME" in
             sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
