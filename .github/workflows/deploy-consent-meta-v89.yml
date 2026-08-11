@@ -1,0 +1,274 @@
+name: Deploy Villa Almale V8.9 consent and Meta Pixel
+
+on:
+  push:
+    paths:
+      - 'releases/v89-consent-meta/DEPLOY'
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download exact production files
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          : "${DEPLOY_PATH:?Missing INFOMANIAK_PATH}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p work backup verify
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o work/audience.js;
+            get \"$DEPLOY_PATH/cookies.html\" -o work/cookies.html;
+            get \"$DEPLOY_PATH/privacy.html\" -o work/privacy.html;
+            bye
+          "
+          cp -a work/. backup/
+
+      - name: Guard current production fingerprints
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'ab012aa44d1365998ff4462044a41b88b1faf0020406aa0753ea7c45fe1e2d12  work/audience.js' | sha256sum -c -
+          echo '8615a12d935efc8a8ebbd45a14001eb8b42317861bcd24de337e22879cb323d8  work/cookies.html' | sha256sum -c -
+          echo '8414e944163deeca4ff8e9143b2a36f56501a4d4eb51f0039f4b17658995a0a7  work/privacy.html' | sha256sum -c -
+
+      - name: Build V8.9 files
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp releases/v89-consent-meta/audience.js work/audience.js
+          # Swedish policy link falls back to the English policy page.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('work/audience.js')
+          s = p.read_text(encoding='utf-8')
+          s = s.replace("return `/cookies.html?lang=${encodeURIComponent(lang)}`;", "const policyLang = lang === 'sv' ? 'en' : lang;\n    return `/cookies.html?lang=${encodeURIComponent(policyLang)}`;", 1)
+          # The Meta script itself is not loaded until explicit marketing consent,
+          # so no additional consent command is needed before init.
+          s = s.replace("    window.fbq('consent', 'grant');\n", "", 1)
+          p.write_text(s, encoding='utf-8')
+          PY
+          node --check work/audience.js
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          cookies = Path('work/cookies.html')
+          s = cookies.read_text(encoding='utf-8')
+          s = s.replace('Entrada en vigor / Entrée en vigueur / Effective date: 22 July 2026', 'Entrada en vigor / Entrée en vigueur / Effective date: 11 August 2026', 1)
+
+          articles = {
+          'es': '''<article class="doc active" data-doc="es"><div class="notice">Las mediciones opcionales no se cargan sin consentimiento: «Solo audiencia» activa únicamente Google Analytics 4; «Aceptar todo» añade Meta Pixel.</div><section><h2>1. Almacenamiento estrictamente necesario</h2><p>El sitio utiliza almacenamiento local para conservar la elección de idioma y la decisión sobre cookies opcionales. Esta decisión se vuelve a solicitar después de seis meses y puede modificarse en cualquier momento mediante el enlace «Gestionar mis cookies» situado al pie de página.</p></section><section><h2>2. Medición de audiencia opcional</h2><p>Con «Solo audiencia» o «Aceptar todo», Google Analytics 4 mide páginas vistas y clics hacia la reserva, el contacto, las redes sociales y las webs oficiales de golf. Nuestra implementación no envía el contenido de formularios, nombres, correos electrónicos, fechas introducidas ni datos de pago.</p><p>La cookie analítica propia <code>_ga</code> y sus variantes pueden conservarse durante un máximo configurado de doce meses. Google Signals, la personalización publicitaria y las señales publicitarias de Google están desactivadas.</p></section><section><h2>3. Medición publicitaria opcional de Meta</h2><p>Solo al elegir «Aceptar todo» se carga Meta Pixel (Meta Platforms Ireland Limited). En la web pública enviamos únicamente el evento <code>PageView</code> para medir visitas y facilitar la atribución de campañas Meta. Meta puede utilizar identificadores técnicos como <code>_fbp</code> y <code>_fbc</code>. Nuestro código no envía a Meta el contenido de formularios.</p></section><section><h2>4. OwnerRez, Stripe y Chekin</h2><p>OwnerRez se activa en las páginas de disponibilidad y reserva. Durante la reserva, el pago o el registro de viajeros, OwnerRez, Stripe y Chekin pueden emplear cookies o tecnologías necesarias para seguridad, sesión, contrato, pago y check-in. El seguimiento publicitario opcional dentro de OwnerRez se gestiona separadamente y no se activa hasta verificar su compatibilidad con el consentimiento.</p></section><section><h2>5. Elegir o retirar el consentimiento</h2><p>«Rechazar todo», «Solo audiencia» y «Aceptar todo» se presentan al mismo nivel. Rechazar no limita la consulta de la web. La elección puede modificarse en cualquier momento mediante «Gestionar mis cookies» al pie de página o desde la configuración del navegador.</p></section></article>''',
+          'fr': '''<article class="doc" data-doc="fr"><div class="notice">Les mesures facultatives ne se chargent pas sans consentement : « Mesure d’audience » active uniquement Google Analytics 4 ; « Tout accepter » ajoute le Pixel Meta.</div><section><h2>1. Stockage strictement nécessaire</h2><p>Le site utilise un stockage local pour mémoriser la langue et le choix relatif aux cookies facultatifs. Ce choix est redemandé après six mois et peut être modifié à tout moment grâce au lien « Gérer mes cookies » placé en bas de page.</p></section><section><h2>2. Mesure d’audience facultative</h2><p>Avec « Mesure d’audience » ou « Tout accepter », Google Analytics 4 mesure les pages vues et les clics vers la réservation, le contact, les réseaux sociaux et les sites officiels des golfs. Notre implémentation ne transmet pas le contenu des formulaires, les noms, adresses électroniques, dates saisies ni données de paiement.</p><p>Le cookie analytique propriétaire <code>_ga</code> et ses variantes peuvent être conservés pendant une durée maximale configurée de douze mois. Google Signals, la personnalisation publicitaire et les signaux publicitaires Google sont désactivés.</p></section><section><h2>3. Mesure publicitaire Meta facultative</h2><p>Le Pixel Meta (Meta Platforms Ireland Limited) ne se charge qu’après « Tout accepter ». Sur le site public, nous envoyons uniquement l’événement <code>PageView</code> afin de mesurer les visites et de faciliter l’attribution des campagnes Meta. Meta peut utiliser des identifiants techniques tels que <code>_fbp</code> et <code>_fbc</code>. Notre code ne transmet pas à Meta le contenu des formulaires.</p></section><section><h2>4. OwnerRez, Stripe et Chekin</h2><p>OwnerRez est activé sur les pages de disponibilité et de réservation. Pendant la réservation, le paiement ou l’enregistrement des voyageurs, OwnerRez, Stripe et Chekin peuvent employer les cookies ou technologies nécessaires à la sécurité, à la session, au contrat, au paiement et au check-in. Le suivi publicitaire facultatif à l’intérieur d’OwnerRez est géré séparément et n’est pas activé avant vérification de sa compatibilité avec le consentement.</p></section><section><h2>5. Choisir ou retirer son consentement</h2><p>« Tout refuser », « Mesure d’audience » et « Tout accepter » sont présentés au même niveau. Le refus n’empêche pas la consultation du site. Le choix peut être modifié à tout moment grâce à « Gérer mes cookies » en bas de page ou depuis les réglages du navigateur.</p></section></article>''',
+          'en': '''<article class="doc" data-doc="en"><div class="notice">Optional measurement does not load without consent: “Audience only” enables Google Analytics 4 only; “Accept all” also enables the Meta Pixel.</div><section><h2>1. Strictly necessary storage</h2><p>The site uses local storage to remember language and the choice concerning optional cookies. The choice is requested again after six months and can be changed at any time through the “Manage my cookies” footer link.</p></section><section><h2>2. Optional audience measurement</h2><p>With “Audience only” or “Accept all”, Google Analytics 4 measures page views and clicks towards booking, contact, social networks and official golf websites. Our implementation does not send form contents, names, email addresses, entered dates or payment data.</p><p>The first-party analytics cookie <code>_ga</code> and its variants may be retained for a configured maximum of twelve months. Google Signals, advertising personalisation and Google advertising signals are disabled.</p></section><section><h2>3. Optional Meta advertising measurement</h2><p>The Meta Pixel (Meta Platforms Ireland Limited) loads only after “Accept all”. On the public website we send only the <code>PageView</code> event to measure visits and support Meta campaign attribution. Meta may use technical identifiers such as <code>_fbp</code> and <code>_fbc</code>. Our code does not send form contents to Meta.</p></section><section><h2>4. OwnerRez, Stripe and Chekin</h2><p>OwnerRez is activated on availability and booking pages. During booking, payment or traveller registration, OwnerRez, Stripe and Chekin may use cookies or similar technologies required for security, sessions, contracts, payment and check-in. Optional advertising tracking inside OwnerRez is managed separately and is not enabled until its consent behaviour has been verified.</p></section><section><h2>5. Choosing or withdrawing consent</h2><p>“Reject all”, “Audience only” and “Accept all” are presented at the same level. Rejecting does not prevent use of the website. The choice can be changed at any time through “Manage my cookies” in the footer or through browser settings.</p></section></article>'''
+          }
+          for lang, repl in articles.items():
+              pattern = rf'<article class="doc(?: active)?" data-doc="{lang}">.*?</article>'
+              s2, n = re.subn(pattern, repl, s, count=1, flags=re.S)
+              if n != 1:
+                  raise SystemExit(f'cookies.html: expected one {lang} article, found {n}')
+              s = s2
+          cookies.write_text(s, encoding='utf-8')
+
+          privacy = Path('work/privacy.html')
+          s = privacy.read_text(encoding='utf-8')
+          s = s.replace('Entrada en vigor / Entrée en vigueur / Effective date: 22 July 2026', 'Entrada en vigor / Entrée en vigueur / Effective date: 11 August 2026', 1)
+          replacements = {
+            'es': ('Medición de audiencia con consentimiento', '''<section><h2>Medición de audiencia con consentimiento</h2><p>Si el visitante acepta «Solo audiencia» o «Aceptar todo», se tratan datos de navegación limitados —páginas consultadas, tipo de dispositivo, procedencia aproximada y clics de orientación— para comprender el uso de la web y mejorar la reserva directa. La base jurídica es el consentimiento, que puede retirarse en cualquier momento.</p><p>El proveedor es Google Analytics 4. La configuración bloquea la carga de la etiqueta antes del consentimiento, desactiva Google Signals, las señales publicitarias y la personalización, limita la cookie a doce meses y no transmite el contenido de los formularios ni los datos de reserva o pago mediante nuestros eventos personalizados.</p></section><section><h2>Medición publicitaria Meta con consentimiento</h2><p>Si el visitante elige «Aceptar todo», se carga Meta Pixel, proporcionado por Meta Platforms Ireland Limited, para medir visitas y facilitar la atribución de campañas Meta. En la web pública nuestro código envía únicamente <code>PageView</code>; no transmite contenido de formularios. Meta puede tratar identificadores técnicos y datos de navegación conforme a sus propias condiciones. El consentimiento puede retirarse en cualquier momento desde «Gestionar mis cookies».</p></section>'''),
+            'fr': ('Mesure d’audience avec consentement', '''<section><h2>Mesure d’audience avec consentement</h2><p>Lorsque le visiteur choisit « Mesure d’audience » ou « Tout accepter », des données de navigation limitées — pages consultées, type d’appareil, provenance approximative et clics d’orientation — sont traitées afin de comprendre l’usage du site et d’améliorer la réservation directe. La base juridique est le consentement, retirable à tout moment.</p><p>Le prestataire est Google Analytics 4. La configuration bloque le chargement de la balise avant consentement, désactive Google Signals, les signaux publicitaires et la personnalisation, limite le cookie à douze mois et ne transmet pas le contenu des formulaires ni les données de réservation ou de paiement au moyen de nos événements personnalisés.</p></section><section><h2>Mesure publicitaire Meta avec consentement</h2><p>Lorsque le visiteur choisit « Tout accepter », le Pixel Meta, fourni par Meta Platforms Ireland Limited, est chargé afin de mesurer les visites et de faciliter l’attribution des campagnes Meta. Sur le site public, notre code envoie uniquement <code>PageView</code> et ne transmet pas le contenu des formulaires. Meta peut traiter des identifiants techniques et des données de navigation conformément à ses propres conditions. Le consentement peut être retiré à tout moment via « Gérer mes cookies ».</p></section>'''),
+            'en': ('Audience measurement with consent', '''<section><h2>Audience measurement with consent</h2><p>When a visitor chooses “Audience only” or “Accept all”, limited navigation data — pages viewed, device type, approximate source and directional clicks — is processed to understand website use and improve direct booking. The legal basis is consent, which may be withdrawn at any time.</p><p>The provider is Google Analytics 4. The configuration blocks the tag before consent, disables Google Signals, advertising signals and personalisation, limits the cookie to twelve months, and does not send form contents or booking/payment data through our custom events.</p></section><section><h2>Meta advertising measurement with consent</h2><p>When a visitor chooses “Accept all”, the Meta Pixel, provided by Meta Platforms Ireland Limited, is loaded to measure visits and support Meta campaign attribution. On the public website our code sends only <code>PageView</code> and does not send form contents. Meta may process technical identifiers and navigation data under its own terms. Consent can be withdrawn at any time through “Manage my cookies”.</p></section>''')
+          }
+          for lang, (heading, repl) in replacements.items():
+              pattern = rf'<section><h2>{re.escape(heading)}</h2>.*?</section>'
+              s2, n = re.subn(pattern, repl, s, count=1, flags=re.S)
+              if n != 1:
+                  raise SystemExit(f'privacy.html: expected one {lang} analytics section, found {n}')
+              s = s2
+          privacy.write_text(s, encoding='utf-8')
+          PY
+
+          grep -F "villa_privacy_consent_v89" work/audience.js
+          grep -F "813403868466271" work/audience.js
+          grep -F "data-consent=\"rejected\"" work/audience.js
+          grep -F "data-consent=\"audience\"" work/audience.js
+          grep -F "data-consent=\"all\"" work/audience.js
+          grep -F "https://connect.facebook.net/en_US/fbevents.js" work/audience.js
+          test "$(grep -Fc "fbq('track', 'PageView')" work/audience.js)" -eq 1
+          if grep -Fq "fbq('track', 'Lead')" work/audience.js; then exit 1; fi
+          grep -F "Mesure publicitaire Meta facultative" work/cookies.html
+          grep -F "Medición publicitaria opcional de Meta" work/cookies.html
+          grep -F "Optional Meta advertising measurement" work/cookies.html
+          grep -F "Mesure publicitaire Meta avec consentement" work/privacy.html
+          grep -F "Medición publicitaria Meta con consentimiento" work/privacy.html
+          grep -F "Meta advertising measurement with consent" work/privacy.html
+          sha256sum work/audience.js work/cookies.html work/privacy.html > v89-postpatch.sha256
+
+      - name: Upload temporary files and byte-check
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js.v89tmp\";
+            put work/cookies.html -o \"$DEPLOY_PATH/cookies.html.v89tmp\";
+            put work/privacy.html -o \"$DEPLOY_PATH/privacy.html.v89tmp\";
+            get \"$DEPLOY_PATH/assets/js/audience.js.v89tmp\" -o verify/audience.js;
+            get \"$DEPLOY_PATH/cookies.html.v89tmp\" -o verify/cookies.html;
+            get \"$DEPLOY_PATH/privacy.html.v89tmp\" -o verify/privacy.html;
+            bye
+          "
+          cmp work/audience.js verify/audience.js
+          cmp work/cookies.html verify/cookies.html
+          cmp work/privacy.html verify/privacy.html
+
+      - name: Publish with rollback protection
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          set +e
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\";
+            put work/cookies.html -o \"$DEPLOY_PATH/cookies.html\";
+            put work/privacy.html -o \"$DEPLOY_PATH/privacy.html\";
+            bye
+          "
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            lftp -c "
+              set cmd:fail-exit yes;
+              set net:max-retries 3;
+              set net:timeout 30;
+              $EXTRA_SETTINGS
+              open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+              put backup/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\";
+              put backup/cookies.html -o \"$DEPLOY_PATH/cookies.html\";
+              put backup/privacy.html -o \"$DEPLOY_PATH/privacy.html\";
+              bye
+            "
+            exit "$rc"
+          fi
+          mkdir -p verify-live
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o verify-live/audience.js;
+            get \"$DEPLOY_PATH/cookies.html\" -o verify-live/cookies.html;
+            get \"$DEPLOY_PATH/privacy.html\" -o verify-live/privacy.html;
+            rm -f \"$DEPLOY_PATH/assets/js/audience.js.v89tmp\";
+            rm -f \"$DEPLOY_PATH/cookies.html.v89tmp\";
+            rm -f \"$DEPLOY_PATH/privacy.html.v89tmp\";
+            bye
+          "
+          cmp work/audience.js verify-live/audience.js
+          cmp work/cookies.html verify-live/cookies.html
+          cmp work/privacy.html verify-live/privacy.html
+
+      - name: Verify public files
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp="$(date +%s)"
+          curl -fsS --retry 4 --retry-delay 3 "https://villanuevoportil.com/assets/js/audience.js?v=v89-$stamp" -o public-audience.js
+          curl -fsS --retry 4 --retry-delay 3 "https://villanuevoportil.com/cookies.html?v=v89-$stamp" -o public-cookies.html
+          curl -fsS --retry 4 --retry-delay 3 "https://villanuevoportil.com/privacy.html?v=v89-$stamp" -o public-privacy.html
+          grep -F "villa_privacy_consent_v89" public-audience.js
+          grep -F "813403868466271" public-audience.js
+          grep -F "Tout refuser" public-audience.js
+          grep -F "Mesure d’audience" public-audience.js
+          grep -F "Tout accepter" public-audience.js
+          grep -F "Mesure publicitaire Meta facultative" public-cookies.html
+          grep -F "Mesure publicitaire Meta avec consentement" public-privacy.html
+
+      - name: Preserve deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: v89-consent-meta-deployment-evidence
+          path: |
+            backup/
+            work/
+            v89-postpatch.sha256
+            public-audience.js
+            public-cookies.html
+            public-privacy.html
+          retention-days: 30
