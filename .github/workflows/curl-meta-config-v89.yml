@@ -1,0 +1,26 @@
+name: Inspect Meta pixel config via curl
+
+on:
+  push:
+    paths:
+      - 'releases/v89-meta-config-curl/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Meta signals config
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://connect.facebook.net/signals/config/813403868466271?v=2.9.373&r=stable&domain=villanuevoportil.com'
+          curl -fsSL --max-time 20 -A 'Mozilla/5.0' "$URL" -o config.js
+          wc -c config.js
+          echo '--- interesting flags ---'
+          grep -Eio '.{0,160}(restrictedEventNames|coreSetup|restriction|PageView|disable|blocked|privacy|dataProcessing|automaticMatching).{0,300}' config.js | head -80 || true
+          echo '--- prefix ---'
+          head -c 4000 config.js
+          echo
