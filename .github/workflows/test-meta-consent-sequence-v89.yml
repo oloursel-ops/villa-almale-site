@@ -1,0 +1,79 @@
+name: Test Villa Almale Meta consent sequence
+
+on:
+  push:
+    paths:
+      - 'releases/v89-meta-consent-test/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Selenium
+        run: pip install -q selenium
+      - name: Compare Meta tracking before and after explicit grant
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, time
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+
+          options=Options()
+          for a in ('--headless=new','--no-sandbox','--disable-dev-shm-usage','--window-size=1440,1000'):
+              options.add_argument(a)
+          options.set_capability('goog:loggingPrefs', {'performance':'ALL','browser':'ALL'})
+          d=webdriver.Chrome(options=options)
+
+          def drain(label):
+              events=[]; failed=[]
+              for entry in d.get_log('performance'):
+                  msg=json.loads(entry['message'])['message']
+                  method=msg.get('method')
+                  params=msg.get('params',{})
+                  if method=='Network.requestWillBeSent':
+                      url=params.get('request',{}).get('url','')
+                      if 'facebook' in url or 'fbevents' in url:
+                          events.append(('REQ',url))
+                  elif method=='Network.responseReceived':
+                      r=params.get('response',{})
+                      url=r.get('url','')
+                      if 'facebook' in url or 'fbevents' in url:
+                          events.append((f"RESP {r.get('status')}",url))
+                  elif method=='Network.loadingFailed':
+                      failed.append((params.get('errorText'),params.get('blockedReason'),params.get('type')))
+              print('\n###',label)
+              for x in events: print(*x)
+              if failed:
+                  print('FAILED=',failed)
+              return events
+
+          try:
+              d.get('https://villanuevoportil.com/')
+              time.sleep(2)
+              d.execute_script("localStorage.setItem('villa_privacy_consent_v89', JSON.stringify({choice:'all', timestamp:Date.now()}));")
+              d.refresh(); time.sleep(7)
+              print('FBQ=',d.execute_script("return {type:typeof fbq, callMethod:!!(window.fbq&&fbq.callMethod), queue:(window.fbq&&fbq.queue)?fbq.queue.length:null, fbp:document.cookie.includes('_fbp=')};"))
+              first=drain('AFTER SITE LOAD')
+
+              d.execute_script("fbq('track','PageView');")
+              time.sleep(4)
+              second=drain('AFTER MANUAL PAGEVIEW')
+
+              d.execute_script("fbq('consent','grant'); fbq('track','PageView');")
+              time.sleep(4)
+              print('AFTER_GRANT_STATE=',d.execute_script("return {queue:(fbq.queue?fbq.queue.length:null), fbp:document.cookie.includes('_fbp=')};"))
+              third=drain('AFTER GRANT + PAGEVIEW')
+
+              all_events=first+second+third
+              tr=[url for _,url in all_events if 'facebook.com/tr' in url]
+              print('TR_COUNT=',len(tr))
+              print('RESULT=', 'GRANT_REQUIRED_OR_EFFECTIVE' if any('facebook.com/tr' in u for _,u in third) else 'NO_TR_AFTER_GRANT')
+              for row in d.get_log('browser'):
+                  if row.get('level') in ('SEVERE','WARNING'): print('BROWSER',row)
+          finally:
+              d.quit()
+          PY
