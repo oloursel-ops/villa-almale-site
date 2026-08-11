@@ -1,0 +1,180 @@
+name: Deploy Swedish landing V8.9.4
+
+on:
+  push:
+    paths:
+      - 'releases/v894-sv-hero/RUN'
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current production files
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing scheme}"
+          : "${DEPLOY_HOST:?Missing host}"
+          : "${DEPLOY_PORT:?Missing port}"
+          : "${DEPLOY_USER:?Missing user}"
+          : "${DEPLOY_PASSWORD:?Missing password}"
+          : "${DEPLOY_PATH:?Missing path}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p work backup
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 3;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/off-season/sv/index.html\" -o work/index.html;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o work/audience.js;
+            bye
+          "
+          cp work/index.html backup/index.html
+          cp work/audience.js backup/audience.js
+          sha256sum backup/index.html backup/audience.js > backup/sha256.txt
+
+      - name: Apply Swedish hero and language patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('work/index.html')
+          s = p.read_text(encoding='utf-8')
+
+          def repl(old, new, expected, label):
+              global s
+              count = s.count(old)
+              if count != expected:
+                  raise SystemExit(f'{label}: expected {expected}, found {count}')
+              s = s.replace(old, new)
+
+          # Release / cache busting
+          repl('<meta content="8.4" name="villa-release">', '<meta content="8.9.4" name="villa-release">', 1, 'release')
+          repl('"dateModified":"2026-08-08"', '"dateModified":"2026-08-11"', 1, 'dateModified')
+          repl('/assets/js/audience.js?v=8.4.2', '/assets/js/audience.js?v=8.9.4', 1, 'audience cache bust')
+
+          # Price language across the Swedish page
+          repl('Pris per person baserat på 7 nätter för 6 vuxna.', 'Pris per person beräknat på 7 nätter för 6 vuxna.', 2, 'price wording')
+
+          # Hero wording and permanent price signal
+          old_h1 = '<h1>En privat villa för golf, kustliv och tid tillsammans.</h1>'
+          new_h1 = '''<h1>En privat villa för golf, kustliv och tid tillsammans.</h1>
+<p class="sv-hero-price"><strong>Från 371 € per person för 7 nätter</strong><span>Pris per person beräknat på 7 nätter för 6 vuxna.</span></p>'''
+          repl(old_h1, new_h1, 1, 'hero h1 insertion')
+
+          repl('Fem sovrum och privat pool. Ingången till Golf Nuevo Portil vid det 18:e hålet ligger precis intill huset; klubbhuset nås på cirka 5 minuter till fots.',
+               'Fem sovrum och en privat pool. En ingång till Golf Nuevo Portil vid hål 18 ligger precis intill huset, och klubbhuset ligger cirka fem minuters promenad bort.',
+               1, 'hero lead')
+          repl('Golf till fots', 'Golf på gångavstånd', 1, 'golf fact')
+          repl('Se lediga datum och pris →', 'Se lediga datum och totalpris →', 2, 'booking CTA')
+
+          # Add minimal page-specific styling without touching shared CSS.
+          marker = '</head>'
+          if s.count(marker) != 1:
+              raise SystemExit('head marker unexpected')
+          style = '''<style id="villa-almale-v894-sv-hero-price">
+html[lang="sv"] .sv-hero-price{display:inline-flex;flex-direction:column;gap:.12rem;margin:.8rem 0 .7rem;padding:.55rem .78rem .58rem;border-left:2px solid #f1cd8f;background:rgba(12,48,43,.48);border-radius:0 10px 10px 0;color:#fff}
+html[lang="sv"] .sv-hero-price strong{font-family:Georgia,"Times New Roman",serif;font-size:clamp(1.04rem,1.65vw,1.25rem);font-weight:600;line-height:1.2}
+html[lang="sv"] .sv-hero-price span{font-size:.76rem;line-height:1.35;color:rgba(255,255,255,.84)}
+@media(max-width:720px){html[lang="sv"] .sv-hero-price{margin:.65rem 0 .62rem;padding:.48rem .68rem .5rem}html[lang="sv"] .sv-hero-price strong{font-size:1rem}html[lang="sv"] .sv-hero-price span{font-size:.72rem}}
+</style>'''
+          s = s.replace(marker, style + marker)
+
+          p.write_text(s, encoding='utf-8')
+
+          # audience.js: Swedish copy only, no tracking/consent logic change.
+          a = Path('work/audience.js')
+          js = a.read_text(encoding='utf-8')
+          old = 'Nödvändiga cookies förblir aktiva. Du kan endast tillåta besöksmätning (Google Analytics), eller alla cookies för att även inkludera Metas annonsmätning.'
+          new = 'Nödvändiga cookies är alltid aktiva. Du kan välja enbart besöksmätning (Google Analytics) eller godkänna alla cookies, inklusive Metas annonsmätning.'
+          count = js.count(old)
+          if count != 1:
+              raise SystemExit(f'Swedish consent copy: expected 1, found {count}')
+          js = js.replace(old, new)
+          a.write_text(js, encoding='utf-8')
+          PY
+
+          node --check work/audience.js
+          grep -q 'Från 371 € per person för 7 nätter' work/index.html
+          grep -q 'sv-hero-price' work/index.html
+          grep -q 'Golf på gångavstånd' work/index.html
+          grep -q 'Se lediga datum och totalpris' work/index.html
+          grep -q 'Nödvändiga cookies är alltid aktiva' work/audience.js
+
+      - name: Deploy patched files
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 3;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            put work/index.html -o \"$DEPLOY_PATH/off-season/sv/index.html\";
+            put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\";
+            bye
+          "
+
+      - name: Verify public production
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 3
+          curl -fsSL --retry 3 --max-time 25 'https://villanuevoportil.com/off-season/sv/?v=894' -o live.html
+          curl -fsSL --retry 3 --max-time 25 'https://villanuevoportil.com/assets/js/audience.js?v=8.9.4' -o live-audience.js
+          grep -q 'class="sv-hero-price"' live.html
+          grep -q 'Från 371 € per person för 7 nätter' live.html
+          grep -q 'Pris per person beräknat på 7 nätter för 6 vuxna.' live.html
+          grep -q 'Golf på gångavstånd' live.html
+          grep -q 'Se lediga datum och totalpris →' live.html
+          grep -q 'Nödvändiga cookies är alltid aktiva.' live-audience.js
+          node --check live-audience.js
+          echo 'V8.9.4 public verification OK'
+
+      - name: Upload backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v894-sv-production-backup
+          path: backup/
+          retention-days: 14
