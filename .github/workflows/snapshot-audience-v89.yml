@@ -1,0 +1,55 @@
+name: Snapshot Villa Almale production audience.js V8.9
+
+on:
+  push:
+    paths:
+      - 'releases/v89-consent-meta/SNAPSHOT'
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current production audience.js
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) echo "Unsupported scheme"; exit 1 ;;
+          esac
+          mkdir -p snapshot
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o snapshot/audience.js;
+            bye
+          "
+          sha256sum snapshot/audience.js > snapshot/audience.sha256
+
+      - name: Upload snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: v89-production-audience-snapshot
+          path: snapshot/
+          retention-days: 7
