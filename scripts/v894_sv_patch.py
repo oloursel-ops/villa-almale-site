@@ -17,7 +17,13 @@ def repl(old: str, new: str, expected: int, label: str) -> None:
     s = s.replace(old, new)
 
 
-repl('<meta content="8.4" name="villa-release">', '<meta content="8.9.4" name="villa-release">', 1, 'release')
+if '<meta content="8.4" name="villa-release"/>' in s:
+    repl('<meta content="8.4" name="villa-release"/>', '<meta content="8.9.4" name="villa-release"/>', 1, 'release')
+elif '<meta content="8.4" name="villa-release">' in s:
+    repl('<meta content="8.4" name="villa-release">', '<meta content="8.9.4" name="villa-release">', 1, 'release')
+else:
+    raise SystemExit('release: expected V8.4 marker not found')
+
 repl('"dateModified":"2026-08-08"', '"dateModified":"2026-08-11"', 1, 'dateModified')
 repl('/assets/js/audience.js?v=8.4.2', '/assets/js/audience.js?v=8.9.4', 1, 'audience cache bust')
 repl('Pris per person baserat på 7 nätter för 6 vuxna.', 'Pris per person beräknat på 7 nätter för 6 vuxna.', 2, 'price wording')
