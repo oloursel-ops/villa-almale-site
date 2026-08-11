@@ -1,0 +1,142 @@
+name: Fix Villa Almale consent banner V8.9.1
+
+on:
+  push:
+    paths:
+      - 'releases/v891-consent-banner/DEPLOY'
+
+concurrency:
+  group: villa-almale-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Install lftp
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download current production audience.js
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_SCHEME:?Missing INFOMANIAK_SCHEME}"
+          : "${DEPLOY_HOST:?Missing INFOMANIAK_HOST}"
+          : "${DEPLOY_PORT:?Missing INFOMANIAK_PORT}"
+          : "${DEPLOY_USER:?Missing INFOMANIAK_USER}"
+          : "${DEPLOY_PASSWORD:?Missing INFOMANIAK_PASSWORD}"
+          test "$DEPLOY_PATH" = "sites/PageWebbasique1"
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+            *) exit 1 ;;
+          esac
+          mkdir -p work backup verify
+          lftp -c "
+            set cmd:fail-exit yes;
+            set net:max-retries 2;
+            set net:timeout 30;
+            $EXTRA_SETTINGS
+            open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST;
+            get \"$DEPLOY_PATH/assets/js/audience.js\" -o work/audience.js;
+            bye
+          "
+          cp work/audience.js backup/audience.js
+
+      - name: Apply compact banner patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('work/audience.js')
+          s=p.read_text(encoding='utf-8')
+          guards=["villa_privacy_consent_v89","813403868466271","audience-consent-v89-style"]
+          for g in guards:
+              if g not in s: raise SystemExit(f'Missing V8.9 guard: {g}')
+          replacements={
+          'Les fonctions indispensables du site restent actives. Vous pouvez autoriser uniquement la mesure d’audience avec Google Analytics, ou tous les cookies pour inclure la mesure publicitaire Meta. Aucun contenu de formulaire n’est transmis par nos balises.':
+          'Les cookies indispensables restent actifs. Vous pouvez autoriser la mesure d’audience (Google Analytics) seule, ou tous les cookies pour inclure la mesure publicitaire Meta.',
+          'Las funciones indispensables del sitio permanecen activas. Puede autorizar solo la medición de audiencia con Google Analytics, o todas las cookies para incluir la medición publicitaria de Meta. Nuestras etiquetas no transmiten el contenido de los formularios.':
+          'Las cookies necesarias permanecen activas. Puede autorizar solo la medición de audiencia (Google Analytics), o todas las cookies para incluir la medición publicitaria de Meta.',
+          'Essential website functions remain active. You can allow audience measurement with Google Analytics only, or all cookies to include Meta advertising measurement. Our tags do not send form contents.':
+          'Essential cookies remain active. You can allow audience measurement (Google Analytics) only, or all cookies to include Meta advertising measurement.',
+          'Nödvändiga webbplatsfunktioner förblir aktiva. Du kan endast tillåta besöksmätning med Google Analytics, eller alla cookies för att även inkludera Metas annonsmätning. Våra taggar skickar inte innehåll från formulär.':
+          'Nödvändiga cookies förblir aktiva. Du kan endast tillåta besöksmätning (Google Analytics), eller alla cookies för att även inkludera Metas annonsmätning.'
+          }
+          for old,new in replacements.items():
+              c=s.count(old)
+              if c<1: raise SystemExit(f'Copy anchor missing: {old[:30]}')
+              s=s.replace(old,new)
+          old_css='''.audience-consent{position:fixed;z-index:9999;left:50%;bottom:18px;transform:translateX(-50%);width:min(760px,calc(100% - 24px));background:#fffdf8;color:#17363b;border:1px solid rgba(23,54,59,.18);border-radius:18px;box-shadow:0 18px 60px rgba(4,29,32,.22);padding:20px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}\n      .audience-consent[hidden]{display:none}\n      .audience-consent h2{font-family:Georgia,"Times New Roman",serif;font-size:1.35rem;font-weight:400;line-height:1.15;margin:0 0 8px}\n      .audience-consent p{margin:0;color:#536d70;font-size:.94rem;line-height:1.5}\n      .audience-consent a{text-decoration:underline;text-underline-offset:2px}\n      .audience-status{display:block;margin-top:8px;font-size:.82rem;color:#637779}\n      .audience-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:16px}\n      .audience-button{min-height:46px;padding:10px 12px;border:1px solid #123f44;border-radius:999px;background:#fffdf8;color:#123f44;font:inherit;font-weight:750;cursor:pointer}\n      .audience-button:hover,.audience-button:focus-visible{background:#123f44;color:#fff;outline:none}\n      .audience-settings{font:inherit}\n      @media(max-width:640px){.audience-consent{bottom:10px;padding:17px}.audience-actions{grid-template-columns:1fr}.audience-button{width:100%}}'''
+          new_css='''.audience-consent{display:block!important;position:fixed!important;z-index:9999!important;left:50%!important;right:auto!important;top:auto!important;bottom:14px!important;transform:translateX(-50%)!important;width:min(650px,calc(100% - 24px))!important;max-width:650px!important;height:auto!important;min-height:0!important;background:#fffdf8!important;color:#17363b!important;border:1px solid rgba(23,54,59,.18)!important;border-radius:16px!important;box-shadow:0 14px 45px rgba(4,29,32,.20)!important;padding:15px 16px!important;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif!important}\n      .audience-consent[hidden]{display:none!important}\n      .audience-consent>div{display:block!important;width:auto!important;max-width:none!important;margin:0!important;padding:0!important;grid-column:auto!important}\n      .audience-consent h2{font-family:Georgia,"Times New Roman",serif!important;font-size:1.08rem!important;font-weight:400!important;line-height:1.15!important;margin:0 0 5px!important}\n      .audience-consent p{margin:0!important;color:#536d70!important;font-size:.82rem!important;line-height:1.38!important;max-width:none!important}\n      .audience-consent a{text-decoration:underline!important;text-underline-offset:2px}\n      .audience-status{display:block!important;margin-top:5px!important;font-size:.76rem!important;color:#637779!important}\n      .audience-actions{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:8px!important;margin-top:11px!important}\n      .audience-button{display:flex!important;align-items:center!important;justify-content:center!important;width:100%!important;min-width:0!important;min-height:38px!important;height:auto!important;margin:0!important;padding:7px 9px!important;border:1px solid #123f44!important;border-radius:999px!important;background:#fffdf8!important;color:#123f44!important;font:inherit!important;font-size:.82rem!important;font-weight:750!important;line-height:1.15!important;cursor:pointer!important}\n      .audience-button:hover,.audience-button:focus-visible{background:#123f44!important;color:#fff!important;outline:none!important}\n      .audience-settings{font:inherit}\n      @media(max-width:640px){.audience-consent{bottom:8px!important;width:calc(100% - 16px)!important;padding:13px!important}.audience-consent p{font-size:.8rem!important}.audience-actions{grid-template-columns:1fr!important;gap:6px!important;margin-top:9px!important}.audience-button{min-height:36px!important}}'''
+          if s.count(old_css)!=1:
+              raise SystemExit(f'Expected original banner CSS exactly once, found {s.count(old_css)}')
+          s=s.replace(old_css,new_css,1)
+          p.write_text(s,encoding='utf-8')
+          PY
+          grep -F 'display:block!important;position:fixed!important' work/audience.js
+          grep -F 'width:min(650px' work/audience.js
+          grep -F "villa_privacy_consent_v89" work/audience.js
+          grep -F "813403868466271" work/audience.js
+          grep -F "analytics_storage: 'granted'" work/audience.js
+
+      - name: Upload temp and verify bytes
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+          esac
+          lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js.v891tmp\"; get \"$DEPLOY_PATH/assets/js/audience.js.v891tmp\" -o verify/audience.js; bye"
+          cmp work/audience.js verify/audience.js
+
+      - name: Publish with rollback
+        env:
+          DEPLOY_SCHEME: ${{ secrets.INFOMANIAK_SCHEME }}
+          DEPLOY_HOST: ${{ secrets.INFOMANIAK_HOST }}
+          DEPLOY_PORT: ${{ secrets.INFOMANIAK_PORT }}
+          DEPLOY_USER: ${{ secrets.INFOMANIAK_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.INFOMANIAK_PASSWORD }}
+          DEPLOY_PATH: ${{ secrets.INFOMANIAK_PATH }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$DEPLOY_SCHEME" in
+            sftp) EXTRA_SETTINGS="set sftp:auto-confirm yes;" ;;
+            ftp) EXTRA_SETTINGS="set ftp:ssl-allow no; set ftp:passive-mode yes;" ;;
+            ftps) EXTRA_SETTINGS="set ftp:ssl-force yes; set ftp:ssl-protect-data yes; set ssl:verify-certificate yes; set ftp:passive-mode yes;" ;;
+          esac
+          set +e
+          lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; put work/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\"; bye"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; put backup/audience.js -o \"$DEPLOY_PATH/assets/js/audience.js\"; bye"
+            exit "$rc"
+          fi
+          lftp -c "set cmd:fail-exit yes; $EXTRA_SETTINGS open -p $DEPLOY_PORT -u \"$DEPLOY_USER\",\"$DEPLOY_PASSWORD\" $DEPLOY_SCHEME://$DEPLOY_HOST; rm -f \"$DEPLOY_PATH/assets/js/audience.js.v891tmp\"; get \"$DEPLOY_PATH/assets/js/audience.js\" -o verify/live.js; bye"
+          cmp work/audience.js verify/live.js
